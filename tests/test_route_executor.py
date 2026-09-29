@@ -21,6 +21,9 @@ class FakeClient:
         self._current_id = path_id
 
     def wait_until_terminal(self):
+        return self.wait_until_terminal_with_keepalive()
+
+    def wait_until_terminal_with_keepalive(self):
         if self._current_id == self.fail_on:
             return ErrorEvent(self._current_id, 0, PathSegment.X,
                               PathResult.MOTION_TIMEOUT, 0, 0)

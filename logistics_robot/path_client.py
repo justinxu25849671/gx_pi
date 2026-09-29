@@ -216,6 +216,29 @@ class PathClient:
             raise PathProtocolError("终止信号缺少 DONE/ERROR 事件")
         return event
 
+    def wait_until_terminal_with_keepalive(self, keepalive_s: float = 0.25,
+                                           timeout_s: float | None = None) -> DoneEvent | ErrorEvent:
+        """等待段完成，同时周期性查询状态，满足 STM32 的链路存活保护。
+
+        ``PATH_STATUS_REQ`` 是有效协议帧，也使 ACK 丢失或串口重连后的状态可观察。
+        它不根据理论运行时间推进路径；只有 DONE/ERROR 才会结束等待。
+        """
+        if keepalive_s <= 0.0:
+            raise ValueError("keepalive_s 必须大于 0")
+        start = time.monotonic()
+        while True:
+            remaining = None if timeout_s is None else timeout_s - (time.monotonic() - start)
+            if remaining is not None and remaining <= 0.0:
+                raise PathRequestTimeout("等待路径完成事件超时")
+            interval = keepalive_s if remaining is None else min(keepalive_s, remaining)
+            if self._terminal.wait(interval):
+                event = self.last_event
+                if isinstance(event, (DoneEvent, ErrorEvent)):
+                    return event
+                raise PathProtocolError("终止信号缺少 DONE/ERROR 事件")
+            # 状态查询失败必须把本段视为未知/失败，不能在调用方继续下一段。
+            self.query_status(timeout_s=self._request_timeout_s)
+
     def connection_lost(self) -> None:
         with self._lock:
             self.connection_available = False

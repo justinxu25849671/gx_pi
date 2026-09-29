@@ -98,6 +98,14 @@ class PathClientTests(unittest.TestCase):
         status = fake.client.query_status()
         self.assertEqual(status.state, PathState.IDLE)
 
+    def test_wait_uses_status_request_as_keepalive(self) -> None:
+        fake = FakeStm32()
+        fake.client.upload_and_start(3, (PathPoint(100, 200),))
+        with self.assertRaises(TimeoutError):
+            fake.client.wait_until_terminal_with_keepalive(keepalive_s=0.001,
+                                                            timeout_s=0.003)
+        self.assertIn(PathCommand.STATUS_REQ, [item[0] for item in fake.commands])
+
 
 if __name__ == "__main__":
     unittest.main()

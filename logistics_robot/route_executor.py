@@ -43,7 +43,7 @@ class RouteExecutor:
             self._client.upload_and_start(path_id, (PathPoint(
                 x_mm, y_mm, self._rpm, self._acceleration),),
                 reset_origin=(not completed))
-            terminal = self._client.wait_until_terminal()
+            terminal = self._client.wait_until_terminal_with_keepalive()
             if isinstance(terminal, ErrorEvent):
                 raise PathProtocolError(
                     f"{segment.start}->{segment.end} 失败：{terminal.error.name}")
