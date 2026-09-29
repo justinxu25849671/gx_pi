@@ -1,6 +1,7 @@
 # 智能搬运机器人树莓派上位机
 
-本工程仅保留与 `F4_slavedevice` 已贯通的 USART3 九点绝对航点二进制协议。
+本工程仅保留与 `F4_slavedevice` 已贯通的 USART3 单段绝对毫米目标二进制协议。
+树莓派负责节点图规划和逐段调度；STM32 只负责当前段的运动、航向保持、超时/急停和完成或失败反馈。
 
 ```text
 /Users/justin/Documents/program/company/gongxun/
@@ -29,8 +30,10 @@ pip install -r requirements.txt
 cp config.example.json config.json
 ```
 
-配置 `config.json` 中的串口设备和九点路网坐标。路径协议使用以重置原点为基准的
-绝对毫米坐标：X 前正、Y 左正。
+配置 `config.json` 中的串口设备和九点路网坐标。`node_coordinates` 仅是用于邻接和
+转弯判断的逻辑格点，绝不能下发给车。执行节点路线前，必须为每个会用到的节点填写
+独立的 `node_mm_coordinates` 实测毫米坐标。路径协议使用以重置原点为基准的绝对毫米
+坐标：X 前正、Y 左正。
 
 ## 使用
 
@@ -45,18 +48,22 @@ python3 main.py --plan-path 1-2-3-6-9
 
 ```bash
 python3 main.py --path-status
-python3 main.py --execute-path '0,500;500,500;500,1000' --path-id 1
+python3 main.py --execute-path '0,500' --path-id 1
+python3 main.py --execute-node-route 1-2-3-6-9 --path-id 1 --path-rpm 40
 python3 main.py --path-stop
 ```
 
-默认执行路径前严格等待：
+每个节点段都严格等待：
 
 ```text
-PATH_CLEAR → PATH_RESET_ORIGIN → PATH_UPLOAD → PATH_START
+PATH_CLEAR → PATH_RESET_ORIGIN（仅首段）→ PATH_UPLOAD(1 point) → PATH_START
+→ STM32 DONE / ERROR → 下一段（或停止）
 ```
 
-`--keep-path-origin` 可跳过原点重置。运行中按 Ctrl+C 会发送 `PATH_STOP` 并等待
-ACK。ACK 超时时会先查询 `PATH_STATUS`，不会盲目重发 `START`。
+`--execute-path` 仅用于单段联调。`--execute-node-route` 会在上一段 `DONE` 后才提交
+下一段，遇到 `ERROR`、断链或请求失败不会推进。`--keep-path-origin` 可跳过单段联调的
+原点重置。运行中按 Ctrl+C 会发送 `PATH_STOP` 并等待 ACK。ACK 超时时会先查询
+`PATH_STATUS`，不会盲目重发 `START`。
 
 ## 验证
 

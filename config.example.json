@@ -33,6 +33,7 @@
       "4": [0, 1], "5": [1, 1], "6": [2, 1],
       "7": [0, 2], "8": [1, 2], "9": [2, 2]
     },
+    "node_mm_coordinates": {},
     "edges": [
       {"from": 1, "to": 2, "distance_mm": null}, {"from": 2, "to": 3, "distance_mm": null},
       {"from": 4, "to": 5, "distance_mm": null}, {"from": 5, "to": 6, "distance_mm": null},

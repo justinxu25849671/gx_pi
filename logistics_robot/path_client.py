@@ -175,6 +175,8 @@ class PathClient:
     def upload_and_start(self, path_id: int, points: Iterable[PathPoint],
                          reset_origin: bool = True) -> StatusEvent | None:
         points_tuple = tuple(points)
+        if len(points_tuple) != 1:
+            raise ValueError("STM32 单段接口一次只能接受一个绝对毫米目标")
         upload_payload = encode_upload(path_id, points_tuple)
         with self._workflow_lock:
             with self._lock:

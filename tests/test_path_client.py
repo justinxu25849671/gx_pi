@@ -44,13 +44,18 @@ class FakeStm32:
 class PathClientTests(unittest.TestCase):
     def test_normal_flow_waits_in_exact_order(self) -> None:
         fake = FakeStm32()
-        points = (PathPoint(0, 500), PathPoint(500, 500))
+        points = (PathPoint(0, 500),)
         fake.client.upload_and_start(3, points)
         self.assertEqual([item[0] for item in fake.commands], [
             PathCommand.CLEAR, PathCommand.RESET_ORIGIN,
             PathCommand.UPLOAD, PathCommand.START,
         ])
-        self.assertEqual(fake.commands[2][2][:2], b"\x03\x02")
+        self.assertEqual(fake.commands[2][2][:2], b"\x03\x01")
+
+    def test_multisegment_upload_is_rejected_on_pi(self) -> None:
+        fake = FakeStm32()
+        with self.assertRaises(ValueError):
+            fake.client.upload_and_start(3, (PathPoint(0, 500), PathPoint(500, 500)))
 
     def test_nack_stops_following_commands(self) -> None:
         fake = FakeStm32()

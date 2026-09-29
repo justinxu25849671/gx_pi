@@ -63,9 +63,14 @@ class RoutePlan:
 class NineNodeRouteMap:
     """九点正交路网。默认图是 1..9 的 3×3 网格。"""
 
-    def __init__(self, coordinates: Mapping[int, tuple[int, int]], edges: Iterable[RouteEdge]) -> None:
+    def __init__(self, coordinates: Mapping[int, tuple[int, int]], edges: Iterable[RouteEdge],
+                 mm_coordinates: Mapping[int, tuple[int, int]] | None = None) -> None:
         """构造路网并拒绝重复、非正距离或引用不存在节点的边。"""
         self._coordinates = dict(coordinates)
+        self._mm_coordinates = dict(mm_coordinates or {})
+        unknown_mm_nodes = set(self._mm_coordinates) - set(self._coordinates)
+        if unknown_mm_nodes:
+            raise ValueError(f"毫米坐标引用未知节点：{sorted(unknown_mm_nodes)}")
         self._edges: dict[frozenset[int], RouteEdge] = {}
         for edge in edges:
             if edge.start == edge.end or edge.start not in self._coordinates or edge.end not in self._coordinates:
@@ -92,13 +97,29 @@ class NineNodeRouteMap:
             int(node): (int(value[0]), int(value[1]))
             for node, value in raw_coordinates.items()
         } or DEFAULT_NODE_COORDINATES
+        raw_mm_coordinates = config.get("node_mm_coordinates", {})
+        mm_coordinates = {
+            int(node): (int(value[0]), int(value[1]))
+            for node, value in raw_mm_coordinates.items()
+        }
         raw_edges = config.get("edges", [])
         edges = [
             RouteEdge(int(item["from"]), int(item["to"]),
                       None if item.get("distance_mm") is None else float(item["distance_mm"]))
             for item in raw_edges
         ]
-        return cls(coordinates, edges or (RouteEdge(a, b, None) for a, b in DEFAULT_EDGES))
+        return cls(coordinates, edges or (RouteEdge(a, b, None) for a, b in DEFAULT_EDGES),
+                   mm_coordinates)
+
+    def mm_coordinate(self, node: int) -> tuple[int, int]:
+        """返回实测场地毫米坐标，绝不把逻辑网格坐标作为毫米下发。"""
+        if node not in self._coordinates:
+            raise ValueError(f"未知节点：{node}")
+        try:
+            return self._mm_coordinates[node]
+        except KeyError as exc:
+            raise ValueError(
+                f"节点 {node} 缺少 node_mm_coordinates 实测值，禁止下发运动") from exc
 
     @staticmethod
     def parse_path(text: str) -> tuple[int, ...]:

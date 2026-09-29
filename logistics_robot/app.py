@@ -10,6 +10,7 @@ from .config import load_config
 from .node_route import NineNodeRouteMap
 from .path_client import PathProtocolError
 from .path_protocol import DoneEvent, ErrorEvent, PathPoint
+from .route_executor import RouteExecutor
 from .serial_link import SerialPathLink
 from .task_code import TaskCode
 
@@ -55,6 +56,7 @@ def main() -> int:
     parser.add_argument("--task", help="与 --dry-run 同用，校验任务码，例如 156+123+516+231")
     parser.add_argument("--plan-path", help="只校验/规划九点路径，例如 1-2-3 或 1-2-3-6-9")
     parser.add_argument("--execute-path", help="下发 1..9 个绝对毫米航点，例如 '0,500;500,500'")
+    parser.add_argument("--execute-node-route", help="按节点图逐段执行，例如 1-2-3-6；必须配置 node_mm_coordinates")
     parser.add_argument("--path-id", type=int, default=1, help="路径 ID，范围 1..255")
     parser.add_argument("--path-rpm", type=int, default=20, help="各航点 RPM，范围 1..5000")
     parser.add_argument("--path-acceleration", type=int, default=10, help="各航点加速度，范围 0..255")
@@ -84,7 +86,8 @@ def main() -> int:
         return 0
 
     path_actions = sum(bool(value) for value in
-                       (arguments.execute_path, arguments.path_status, arguments.path_stop))
+                       (arguments.execute_path, arguments.execute_node_route,
+                        arguments.path_status, arguments.path_stop))
     if path_actions != 1:
         parser.error("必须选择 --execute-path、--path-status 或 --path-stop 之一")
     link = SerialPathLink(**config["serial"])
@@ -100,17 +103,25 @@ def main() -> int:
         elif arguments.path_stop:
             link.stop_path()
             LOG.info("PATH_STOP 已获 ACK")
-        else:
+        elif arguments.execute_path:
             points = _parse_absolute_points(arguments.execute_path, arguments.path_rpm,
                                             arguments.path_acceleration)
+            if len(points) != 1:
+                parser.error("--execute-path 现在只允许一个单段绝对毫米目标；多段请用 --execute-node-route")
             link.start_path(arguments.path_id, points, not arguments.keep_path_origin)
-            LOG.info("路径已启动，等待 STM32 DONE/ERROR；Ctrl+C 将发送 PATH_STOP")
             terminal = link.path_client.wait_until_terminal()
             if isinstance(terminal, ErrorEvent):
                 raise PathProtocolError(f"路径失败：{terminal.error.name}")
             assert isinstance(terminal, DoneEvent)
-            LOG.info("路径完成：%d 点，估算坐标 (%d,%d)", terminal.count,
-                     terminal.estimated_x_mm, terminal.estimated_y_mm)
+            LOG.info("单段完成：估算坐标 (%d,%d)", terminal.estimated_x_mm,
+                     terminal.estimated_y_mm)
+        else:
+            route_map = NineNodeRouteMap.from_config(config.get("node_route"))
+            plan = route_map.plan(route_map.parse_path(arguments.execute_node_route))
+            executor = RouteExecutor(link.path_client, route_map, arguments.path_rpm,
+                                     arguments.path_acceleration)
+            completions = executor.execute(plan, arguments.path_id)
+            LOG.info("节点路线完成：%d 段；最终节点 %d", len(completions), plan.nodes[-1])
     except KeyboardInterrupt:
         link.stop_path()
         LOG.warning("用户取消，PATH_STOP 已获 ACK")
