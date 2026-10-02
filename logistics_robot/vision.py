@@ -9,9 +9,73 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from collections import Counter
+import math
 from typing import Any
 
 from .model import DetectedObject
+
+
+_DISPLAY_COLORS_BGR = {
+    "red": (0, 0, 255),
+    "yellow": (0, 255, 255),
+    "blue": (255, 80, 0),
+    "green": (0, 200, 0),
+    # 黑色物料使用白色标记，避免标记本身不可见。
+    "black": (255, 255, 255),
+    "cyan": (255, 255, 0),
+}
+_DEBUG_COLOR_ORDER = ("red", "yellow", "blue", "green", "black", "cyan")
+
+
+def draw_object_debug_frame(frame, objects: list[DetectedObject], fps: float,
+                            camera_index: int):
+    """返回物料检测调试画面，不修改输入图像或检测结果。
+
+    ``DetectedObject`` 只保存中心点和轮廓面积，因此调试界面以等面积圆和
+    外接方框近似标出物体范围；HSV 轮廓提取仍只由 :meth:`detect_objects`
+    负责。
+    """
+    try:
+        import cv2
+    except ImportError as exc:
+        raise RuntimeError("未安装 OpenCV，请先执行 pip install -r requirements.txt") from exc
+
+    annotated = frame.copy()
+    height, width = annotated.shape[:2]
+    center_x, center_y = width // 2, height // 2
+    cv2.line(annotated, (center_x, 0), (center_x, height - 1), (180, 180, 180), 1)
+    cv2.line(annotated, (0, center_y), (width - 1, center_y), (180, 180, 180), 1)
+    cv2.drawMarker(annotated, (center_x, center_y), (255, 255, 255),
+                   markerType=cv2.MARKER_CROSS, markerSize=20, thickness=2)
+
+    for item in objects:
+        bgr = _DISPLAY_COLORS_BGR.get(item.color, (255, 255, 255))
+        point = (round(item.center_x_px), round(item.center_y_px))
+        radius = max(8, round(math.sqrt(max(item.area_px, 1.0) / math.pi)))
+        cv2.circle(annotated, point, radius, bgr, 2)
+        cv2.rectangle(annotated, (point[0] - radius, point[1] - radius),
+                      (point[0] + radius, point[1] + radius), bgr, 1)
+        cv2.drawMarker(annotated, point, bgr, markerType=cv2.MARKER_CROSS,
+                       markerSize=12, thickness=2)
+        label = (f"{item.color} ({item.center_x_px:.1f}, {item.center_y_px:.1f}) "
+                 f"A={item.area_px:.1f}")
+        text_origin = (max(0, point[0] - radius), max(18, point[1] - radius - 6))
+        cv2.putText(annotated, label, text_origin, cv2.FONT_HERSHEY_SIMPLEX,
+                    0.55, bgr, 2, cv2.LINE_AA)
+
+    counts = Counter(item.color for item in objects)
+    cv2.putText(annotated, f"Camera: {camera_index}  {width}x{height}  FPS: {fps:.1f}",
+                (16, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2, cv2.LINE_AA)
+    cv2.putText(annotated, f"Objects: {len(objects)}", (16, 56),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2, cv2.LINE_AA)
+    count_text = "  ".join(f"{color}: {counts[color]}" for color in _DEBUG_COLOR_ORDER)
+    cv2.putText(annotated, count_text, (16, height - 42), cv2.FONT_HERSHEY_SIMPLEX,
+                0.52, (255, 255, 255), 2, cv2.LINE_AA)
+    cv2.putText(annotated, "q/ESC: quit  s: save  p: print results",
+                (16, height - 16), cv2.FONT_HERSHEY_SIMPLEX, 0.55,
+                (255, 255, 255), 2, cv2.LINE_AA)
+    return annotated
 
 
 class CameraVision:
@@ -30,7 +94,8 @@ class CameraVision:
         self._capture.set(cv2.CAP_PROP_FPS, int(camera_config["fps"]))
         if not self._capture.isOpened():
             raise RuntimeError("无法打开摄像头；检查 index、USB/CSI 接线及权限")
-        self._min_area = float(camera_config["min_object_area_px"])
+        # 二维码相机未来也会复用本类，但它不需要颜色检测面积阈值。
+        self._min_area = float(camera_config.get("min_object_area_px", 0))
         self._hsv_colors = hsv_colors
         self._qr = cv2.QRCodeDetector()
 

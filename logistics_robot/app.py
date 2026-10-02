@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import logging
 from pathlib import Path
+import time
 
 from .config import load_config
 from .node_route import NineNodeRouteMap
@@ -13,6 +14,7 @@ from .path_protocol import DoneEvent, ErrorEvent, PathPoint
 from .route_executor import RouteExecutor
 from .serial_link import SerialPathLink
 from .task_code import TaskCode
+from .vision import CameraVision, draw_object_debug_frame
 
 
 LOG = logging.getLogger(__name__)
@@ -48,6 +50,72 @@ def _log_path_event(event) -> None:
         LOG.info("路径事件 %s：path=%s", type(event).__name__, getattr(event, "path_id", 0))
 
 
+def _print_objects(objects) -> None:
+    """将当前帧检测结果输出为便于复制的像素测量记录。"""
+    if not objects:
+        LOG.info("当前画面未识别到有效物料")
+        return
+    for item in objects:
+        LOG.info("color=%s, center_x_px=%.1f, center_y_px=%.1f, area_px=%.1f",
+                 item.color, item.center_x_px, item.center_y_px, item.area_px)
+
+
+def _run_vision_debug(config, camera_index: int | None) -> int:
+    """独立运行物料相机调试；此函数不访问串口或路径对象。"""
+    camera_config = dict(config["object_camera"])
+    if camera_index is not None:
+        camera_config["index"] = camera_index
+    selected_index = int(camera_config["index"])
+    try:
+        vision = CameraVision(camera_config, config["hsv_colors"])
+    except RuntimeError as exc:
+        LOG.error("无法打开物料识别相机：请检查 object_camera.index、USB/CSI 接线和权限。(%s)", exc)
+        return 1
+
+    try:
+        cv2 = vision.cv2
+        previous_time = time.perf_counter()
+        while True:
+            try:
+                frame = vision.read()
+            except RuntimeError as exc:
+                LOG.error("物料识别相机读帧失败：%s", exc)
+                return 1
+            now = time.perf_counter()
+            elapsed = now - previous_time
+            previous_time = now
+            fps = 1.0 / elapsed if elapsed > 0 else 0.0
+            objects = vision.detect_objects(frame)
+            annotated = draw_object_debug_frame(frame, objects, fps, selected_index)
+            try:
+                cv2.imshow("Object Camera Debug", annotated)
+                key = cv2.waitKey(1) & 0xFF
+            except cv2.error as exc:
+                LOG.error("当前环境无法打开 OpenCV 窗口；请在树莓派桌面、VNC 或接入显示器的环境中运行 --vision-debug。(%s)", exc)
+                return 1
+            if key in (ord("q"), 27):
+                return 0
+            if key == ord("p"):
+                _print_objects(objects)
+            elif key == ord("s"):
+                output_dir = Path("logs") / "vision"
+                output_path = output_dir / time.strftime("object_%Y%m%d_%H%M%S.jpg")
+                try:
+                    output_dir.mkdir(parents=True, exist_ok=True)
+                    if cv2.imwrite(str(output_path), annotated):
+                        LOG.info("已保存物料识别调试画面：%s", output_path.resolve())
+                    else:
+                        LOG.error("保存物料识别调试画面失败：%s", output_path.resolve())
+                except OSError as exc:
+                    LOG.error("保存物料识别调试画面失败：%s (%s)", output_path.resolve(), exc)
+    finally:
+        vision.close()
+        try:
+            vision.cv2.destroyAllWindows()
+        except vision.cv2.error:
+            pass
+
+
 def main() -> int:
     """只提供路径预览、任务码校验和已由 F4 实现的路径命令。"""
     parser = argparse.ArgumentParser(description="智能搬运机器人九点路径控制")
@@ -63,9 +131,17 @@ def main() -> int:
     parser.add_argument("--keep-path-origin", action="store_true", help="启动前不重置 STM32 局部原点")
     parser.add_argument("--path-status", action="store_true", help="查询 STM32 当前路径状态后退出")
     parser.add_argument("--path-stop", action="store_true", help="停止 STM32 当前路径后退出")
+    parser.add_argument("--vision-debug", action="store_true", help="独立调试物料识别相机，不访问 STM32")
+    parser.add_argument("--vision-camera-index", type=int,
+                        help="仅本次运行覆盖 object_camera.index")
     arguments = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     config = load_config(arguments.config)
+
+    if arguments.vision_debug:
+        return _run_vision_debug(config, arguments.vision_camera_index)
+    if arguments.vision_camera_index is not None:
+        parser.error("--vision-camera-index 必须与 --vision-debug 同用")
 
     if arguments.dry_run:
         if not arguments.task:

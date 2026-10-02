@@ -5,12 +5,18 @@
     "request_timeout_s": 1.0,
     "reconnect_period_s": 1.0
   },
-  "camera": {
+  "object_camera": {
     "index": 0,
-    "width": 1280,
-    "height": 720,
+    "width": 1920,
+    "height": 1080,
     "fps": 30,
     "min_object_area_px": 900
+  },
+  "qr_camera": {
+    "index": 1,
+    "width": 1920,
+    "height": 1080,
+    "fps": 30
   },
   "start_button": {
     "gpio_pin": 17,
