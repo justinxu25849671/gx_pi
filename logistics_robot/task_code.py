@@ -17,8 +17,6 @@ COLOR_BY_DIGIT = {
     "2": "yellow",
     "3": "blue",
     "4": "green",
-    "5": "black",
-    "6": "cyan",
 }
 
 CHINESE_COLOR = {
@@ -26,11 +24,9 @@ CHINESE_COLOR = {
     "yellow": "黄色",
     "blue": "蓝色",
     "green": "绿色",
-    "black": "黑色",
-    "cyan": "浅蓝色",
 }
 
-_PATTERN = re.compile(r"^([1-6]{3})\+([1-3]{3})\+([1-6]{3})\+([1-3]{3})$")
+_PATTERN = re.compile(r"^([1-4]{3})\+([1-3]{3})\+([1-4]{3})\+([1-3]{3})$")
 
 
 @dataclass(frozen=True)
@@ -49,11 +45,13 @@ class TaskCode:
         normalized = text.strip().replace(" ", "")
         match = _PATTERN.fullmatch(normalized)
         if not match:
-            raise ValueError("任务码应为 156+123+516+231 这样的四组三位格式")
+            raise ValueError("任务码应为 123+123+321+231 这样的四组三位格式；颜色仅允许 1..4")
 
         first_color_digits, first_positions, second_color_digits, second_positions = match.groups()
         if len(set(first_color_digits)) != 3 or len(set(second_color_digits)) != 3:
             raise ValueError("每一批必须是三种不同颜色的物料")
+        if set(first_color_digits) != set(second_color_digits):
+            raise ValueError("第二批每种颜色必须在第一批有同色物料，才能按实际承接位置码垛")
 
         return cls(
             raw=normalized,

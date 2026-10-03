@@ -19,6 +19,24 @@ class DetectedObject:
     center_x_px: float
     center_y_px: float
     area_px: float
+    bbox: tuple[int, int, int, int] | None = None
+    contour: tuple[tuple[int, int], ...] = ()
+    aspect_ratio: float = 0.0
+    solidity: float = 0.0
+    extent: float = 0.0
+    reference_x_px: float | None = None
+    reference_y_px: float | None = None
+    stable: bool = False
+    stable_frames: int = 0
+    confidence: float = 0.0
+
+    @property
+    def reference_point_px(self) -> tuple[float, float]:
+        """返回经过配置偏移修正的抓取参考点，而不是默认使用颜色重心。"""
+        return (
+            self.center_x_px if self.reference_x_px is None else self.reference_x_px,
+            self.center_y_px if self.reference_y_px is None else self.reference_y_px,
+        )
 
 
 class MechanismAction(str, Enum):

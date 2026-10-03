@@ -37,10 +37,11 @@ cp config.example.json config.json
 
 ## 使用
 
-任务码和路网预览不访问硬件：
+任务码只允许红 `1`、黄 `2`、蓝 `3`、绿 `4`；两批各三种不同颜色，且第二批颜色
+必须在第一批存在同色承接物料。任务码和路网预览不访问硬件：
 
 ```bash
-python3 main.py --dry-run --task 156+123+516+231
+python3 main.py --dry-run --task 123+123+321+231
 python3 main.py --plan-path 1-2-3-6-9
 ```
 
@@ -73,3 +74,20 @@ python3 -m unittest discover -s tests -v
 
 自动化测试只验证上位机编解码与请求状态机；不代表串口、STM32、电机或实车路径
 已经验证。
+
+## 物料识别相机调试
+
+物料相机可在不连接 STM32 的情况下独立调试物料和放置环：
+
+```bash
+python3 main.py --vision-debug --vision-mode combined
+python3 main.py --vision-image samples/held_object.jpg --vision-mode combined
+```
+
+详细的启动、按键、现场记录和故障排查见
+[物料识别相机组调试手册](docs/object_camera_debug_manual.md)。
+
+松爪前横移/伸缩、动作完成反馈、第一/二层目标区别和一次性放置约束见
+[放置对准接入说明](docs/placement_alignment_manual.md)。当前配置的环检测与三个视觉
+姿态均保持 `calibrated: false`，且仓库没有真实机构动作协议；完成现场标定和反馈适配
+前，自动放置会被安全拒绝。

@@ -11,6 +11,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import Enum
 
+from .alignment import AlignmentObservation, AlignmentState, PlacementAlignmentController
 from .model import MechanismAction, MissionStep
 from .task_code import TaskCode
 
@@ -63,15 +64,19 @@ class LogisticsMission:
         for color, position in zip(task.first_colors, task.first_positions):
             steps.append(MissionStep("temporary", MechanismAction.PLACE_TO_TEMPORARY, color, position, 1))
 
-        # 第二批：同样经过粗加工区，最后在暂存区同色物料上码垛。
+        # 第二批：同样经过粗加工区，最后在第一批同色物料的实际承接位置码垛。
         for color, position in zip(task.second_colors, task.second_positions):
             steps.append(MissionStep("raw", MechanismAction.PICK_FROM_RAW, color, position, 2))
         for color, position in zip(task.second_colors, task.second_positions):
             steps.append(MissionStep("coarse", MechanismAction.PLACE_TO_COARSE, color, position, 2))
         for color, position in zip(task.second_colors, task.second_positions):
             steps.append(MissionStep("coarse", MechanismAction.PICK_FROM_COARSE, color, position, 2))
-        for color, position in zip(task.second_colors, task.second_positions):
-            steps.append(MissionStep("temporary", MechanismAction.STACK_TO_TEMPORARY, color, position, 2))
+        first_temporary_position = dict(zip(task.first_colors, task.first_positions))
+        for color in task.second_colors:
+            if color not in first_temporary_position:
+                raise ValueError(f"第二批 {color} 在第一批中没有同色承接物料，无法码垛")
+            steps.append(MissionStep("temporary", MechanismAction.STACK_TO_TEMPORARY, color,
+                                     first_temporary_position[color], 2))
         return steps
 
     def press_start(self) -> None:
@@ -95,13 +100,13 @@ class LogisticsMission:
         return self._steps[self._index]
 
     def complete_current_step(self, verified: bool) -> None:
-        """提交一步的复核结果；失败立即进入故障态而不继续搬运。"""
+        """提交动作完成反馈；放置步不得把松爪后视觉复查当成 ``verified``。"""
         step = self.current_step()
         if step is None:
             raise RuntimeError("当前没有可完成的任务步骤")
         if not verified:
             self._state = MissionState.FAULT
-            self._fault_message = f"{step.action.value} 未通过机构/视觉复核"
+            self._fault_message = f"{step.action.value} 未通过松爪前条件或机构完成反馈"
             return
         if step.action in {MechanismAction.PICK_FROM_RAW, MechanismAction.PICK_FROM_COARSE}:
             self._correct_picks += 1
@@ -110,6 +115,19 @@ class LogisticsMission:
         self._index += 1
         if self._index == len(self._steps):
             self._state = MissionState.COMPLETE
+
+    def complete_aligned_placement(self, *, completed: bool, released: bool,
+                                   release_started: bool) -> None:
+        """只接受一次性放置状态机的终态，不允许松爪后视觉补救。"""
+        step = self.current_step()
+        if step is None or step.action in {
+            MechanismAction.PICK_FROM_RAW, MechanismAction.PICK_FROM_COARSE,
+        }:
+            raise RuntimeError("当前步骤不是放置动作")
+        if not (completed and released and release_started):
+            self.complete_current_step(False)
+            return
+        self.complete_current_step(True)
 
     def fail(self, message: str) -> None:
         """从任意运行阶段显式切换到故障态。"""
@@ -141,3 +159,31 @@ class LogisticsMission:
             correct_places=self._correct_places,
             message=message,
         )
+
+
+class MissionPlacementCoordinator:
+    """把单次放置控制器的终态安全提交给总任务，不做松爪后视觉复查。"""
+
+    def __init__(self, mission: LogisticsMission,
+                 controller: PlacementAlignmentController) -> None:
+        self._mission = mission
+        self._controller = controller
+        self._submitted = False
+
+    def tick(self, observation: AlignmentObservation | None = None):
+        # 平面锁定后显式丢弃上层仍传入的画面，确保下降、松爪和撤离不复查。
+        current = observation if self._controller.needs_observation else None
+        status = self._controller.tick(current)
+        if self._submitted:
+            return status
+        if status.state == AlignmentState.COMPLETE:
+            self._mission.complete_aligned_placement(
+                completed=True,
+                released=status.released,
+                release_started=status.release_started,
+            )
+            self._submitted = True
+        elif status.state == AlignmentState.FAULT:
+            self._mission.fail(status.message)
+            self._submitted = True
+        return status
