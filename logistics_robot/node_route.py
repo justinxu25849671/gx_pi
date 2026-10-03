@@ -18,14 +18,15 @@ from typing import Any, Iterable, Mapping
 
 
 DEFAULT_NODE_COORDINATES: dict[int, tuple[int, int]] = {
-    1: (0, 0), 2: (1, 0), 3: (2, 0),
-    4: (0, 1), 5: (1, 1), 6: (2, 1),
-    7: (0, 2), 8: (1, 2), 9: (2, 2),
+    # 与场地图一致：1/4/7 在右侧，3/6/9 在左侧。
+    1: (2, 0), 2: (1, 0), 3: (0, 0),
+    4: (2, 1), 5: (1, 1), 6: (0, 1),
+    7: (2, 2), 8: (1, 2), 9: (0, 2),
 }
 
 DEFAULT_EDGES: tuple[tuple[int, int], ...] = (
     (1, 2), (2, 3), (4, 5), (5, 6), (7, 8), (8, 9),
-    (1, 4), (4, 7), (2, 5), (5, 8), (3, 6), (6, 9),
+    (1, 4), (2, 5), (3, 6), (4, 7), (5, 8), (6, 9),
 )
 
 
@@ -61,7 +62,7 @@ class RoutePlan:
 
 
 class NineNodeRouteMap:
-    """九点正交路网。默认图是 1..9 的 3×3 网格。"""
+    """九点正交路网；默认图采用场地中实际连通的八条通道。"""
 
     def __init__(self, coordinates: Mapping[int, tuple[int, int]], edges: Iterable[RouteEdge],
                  mm_coordinates: Mapping[int, tuple[int, int]] | None = None) -> None:
@@ -84,7 +85,7 @@ class NineNodeRouteMap:
 
     @classmethod
     def default(cls) -> "NineNodeRouteMap":
-        """创建默认 3×3 正交网格，距离均留待场地实测。"""
+        """创建默认场地拓扑，距离均留待场地实测。"""
         return cls(DEFAULT_NODE_COORDINATES, (RouteEdge(a, b, None) for a, b in DEFAULT_EDGES))
 
     @classmethod
