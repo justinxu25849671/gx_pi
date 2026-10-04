@@ -62,7 +62,7 @@ class RoutePlan:
 
 
 class NineNodeRouteMap:
-    """九点正交路网；默认图采用场地中实际连通的八条通道。"""
+    """九点正交路网；执行距离取实测边长，毫米坐标只确定轴向符号。"""
 
     def __init__(self, coordinates: Mapping[int, tuple[int, int]], edges: Iterable[RouteEdge],
                  mm_coordinates: Mapping[int, tuple[int, int]] | None = None) -> None:
@@ -150,10 +150,7 @@ class NineNodeRouteMap:
         return result
 
     def shortest_path(self, start: int, end: int, blocked: Iterable[int] = ()) -> tuple[int, ...]:
-        """使用 Dijkstra 搜索避开屏蔽节点的最低距离路径。
-
-        未标定边临时按相同权重处理；完成距离标定后会自动使用毫米距离。
-        """
+        """使用 Dijkstra 搜索避开屏蔽节点和未标定边的最低距离路径。"""
         if start not in self._coordinates or end not in self._coordinates:
             raise ValueError("起点或终点不在节点图中")
         blocked_set = set(blocked)
@@ -176,8 +173,9 @@ class NineNodeRouteMap:
                     continue
                 if neighbor in blocked_set:
                     continue
-                edge_cost = edge.distance_mm if edge.distance_mm is not None else 1.0
-                new_cost = cost + edge_cost
+                if edge.distance_mm is None:
+                    continue
+                new_cost = cost + edge.distance_mm
                 if new_cost < best.get(neighbor, float("inf")):
                     best[neighbor] = new_cost
                     heapq.heappush(queue, (new_cost, neighbor, path + (neighbor,)))
@@ -210,3 +208,32 @@ class NineNodeRouteMap:
             segments.append(RouteSegment(start, path[end_index], path[index + 1:end_index], distance))
             index = end_index
         return RoutePlan(path, tuple(segments))
+
+    def segment_targets_mm(self, plan: RoutePlan) -> tuple[tuple[int, int], ...]:
+        """按选定路径的边长累计 F4 局部绝对目标，执行前验证全部输入。"""
+        x_mm = 0.0
+        y_mm = 0.0
+        targets: list[tuple[int, int]] = []
+        for segment in plan.segments:
+            route = (segment.start, *segment.via, segment.end)
+            for start, end in zip(route, route[1:]):
+                distance = self._edge(start, end).distance_mm
+                if distance is None:
+                    raise ValueError(f"节点 {start}->{end} 缺少实测 distance_mm，禁止下发运动")
+                grid_dx, grid_dy = self._direction(start, end)
+                start_x, start_y = self.mm_coordinate(start)
+                end_x, end_y = self.mm_coordinate(end)
+                if grid_dx:
+                    axis_delta = end_x - start_x
+                    if axis_delta == 0:
+                        raise ValueError(f"节点 {start}->{end} 缺少 X 运动方向，禁止下发运动")
+                    x_mm += distance if axis_delta > 0 else -distance
+                elif grid_dy:
+                    axis_delta = end_y - start_y
+                    if axis_delta == 0:
+                        raise ValueError(f"节点 {start}->{end} 缺少 Y 运动方向，禁止下发运动")
+                    y_mm += distance if axis_delta > 0 else -distance
+            # F4 协议使用整数毫米；半毫米按远离零点的方向取整。
+            targets.append((int(x_mm + 0.5) if x_mm >= 0 else -int(-x_mm + 0.5),
+                            int(y_mm + 0.5) if y_mm >= 0 else -int(-y_mm + 0.5)))
+        return tuple(targets)

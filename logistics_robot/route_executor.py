@@ -37,15 +37,15 @@ class RouteExecutor:
             raise ValueError("first_path_id 必须在 1..255")
         completed: list[SegmentCompletion] = []
         path_id = first_path_id
-        # PATH_RESET_ORIGIN 把 STM32 的当前位置设为 (0, 0)。地图坐标则以节点 1
-        # 为参考；因此每个任务开始时都必须相对本次起点平移，才能从任意节点启动。
-        origin_x_mm, origin_y_mm = self._map.mm_coordinate(plan.nodes[0])
-        for segment in plan.segments:
-            x_mm, y_mm = self._map.mm_coordinate(segment.end)
-            # 只有第一段建立 STM32 的局部原点；后续坐标保持同一毫米参考系。
-            self._client.upload_and_start(path_id, (PathPoint(
-                x_mm - origin_x_mm, y_mm - origin_y_mm,
-                self._rpm, self._acceleration),),
+        # 在首次运动前验证整条路线，避免后续段缺失边长时车已离开起点。
+        targets = self._map.segment_targets_mm(plan)
+        points = tuple(PathPoint(x_mm, y_mm, self._rpm, self._acceleration)
+                       for x_mm, y_mm in targets)
+        for point in points:
+            point.validate()
+        for segment, point in zip(plan.segments, points):
+            # 只有第一段建立 F4 局部原点；后续目标累计本次路线的实测边长。
+            self._client.upload_and_start(path_id, (point,),
                 reset_origin=(not completed))
             terminal = self._client.wait_until_terminal_with_keepalive()
             if isinstance(terminal, ErrorEvent):

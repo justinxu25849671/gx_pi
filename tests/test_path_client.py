@@ -3,7 +3,7 @@
 import struct
 import unittest
 
-from logistics_robot.path_client import PathClient, PathNackError
+from logistics_robot.path_client import PathClient, PathNackError, PathProtocolError
 from logistics_robot.path_protocol import (
     FrameDecoder, PathCommand, PathEventCode, PathPoint, PathResult, PathState,
     encode_frame,
@@ -16,6 +16,7 @@ class FakeStm32:
         self.commands = []
         self.nack_command = None
         self.drop_start_ack = False
+        self.running = False
         self.output_sequence = 0
 
     def _send(self, command, payload) -> None:
@@ -27,7 +28,7 @@ class FakeStm32:
         command = PathCommand(frame.command)
         self.commands.append((command, frame.sequence, frame.payload))
         if command == PathCommand.STATUS_REQ:
-            state = PathState.RUN_X if self.drop_start_ack else PathState.IDLE
+            state = PathState.RUN_X if self.running or self.drop_start_ack else PathState.IDLE
             payload = struct.pack("<BBBBBiiii", 3, state, 0, 0, 2, 0, 0, 100, 200)
             self._send(PathEventCode.STATUS, payload)
             return
@@ -37,6 +38,8 @@ class FakeStm32:
             return
         if command == PathCommand.START and self.drop_start_ack:
             return
+        if command == PathCommand.START:
+            self.running = True
         path_id = frame.payload[0] if command in (PathCommand.UPLOAD, PathCommand.START) else 0
         self._send(PathEventCode.ACK, bytes((frame.sequence, path_id, PathResult.OK)))
 
@@ -85,6 +88,15 @@ class PathClientTests(unittest.TestCase):
         self.assertEqual(terminal.path_id, 3)
         self.assertFalse(fake.client.task_active)
 
+    def test_status_after_done_does_not_hide_terminal_event(self) -> None:
+        fake = FakeStm32()
+        fake.client.upload_and_start(3, (PathPoint(100, 200),))
+        fake._send(PathEventCode.DONE, struct.pack("<BBii", 3, 1, 100, 200))
+        fake.client.query_status()
+        terminal = fake.client.wait_until_terminal_with_keepalive(keepalive_s=0.001,
+                                                                timeout_s=0.01)
+        self.assertEqual(terminal.path_id, 3)
+
     def test_stop_uses_protocol_ack(self) -> None:
         fake = FakeStm32()
         fake.client.stop()
@@ -105,6 +117,14 @@ class PathClientTests(unittest.TestCase):
             fake.client.wait_until_terminal_with_keepalive(keepalive_s=0.001,
                                                             timeout_s=0.003)
         self.assertIn(PathCommand.STATUS_REQ, [item[0] for item in fake.commands])
+
+    def test_lost_done_and_idle_status_fails_instead_of_waiting_forever(self) -> None:
+        fake = FakeStm32()
+        fake.client.upload_and_start(3, (PathPoint(100, 200),))
+        fake.running = False
+        with self.assertRaisesRegex(PathProtocolError, "未收到 DONE/ERROR"):
+            fake.client.wait_until_terminal_with_keepalive(keepalive_s=0.001,
+                                                            timeout_s=0.02)
 
 
 if __name__ == "__main__":

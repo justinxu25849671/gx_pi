@@ -1,12 +1,15 @@
 """机械臂手动点动的上位机编解码与请求关联。"""
 
 import struct
+import sys
 import unittest
+from unittest.mock import patch
 
+from logistics_robot import app
 from logistics_robot.path_client import PathClient, PathNackError, PathRequestTimeout
 from logistics_robot.path_protocol import (
     ArmState, FrameDecoder, PathCommand, PathEventCode, PathResult,
-    encode_arm_jog, encode_frame,
+    encode_arm_jog, encode_arm_move, encode_frame,
 )
 
 
@@ -33,7 +36,7 @@ class FakeArmStm32:
         else:
             self.send(PathEventCode.ACK,
                       bytes((frame.sequence, motor_id, PathResult.OK)))
-            if frame.command == PathCommand.ARM_JOG:
+            if frame.command in (PathCommand.ARM_JOG, PathCommand.ARM_MOVE):
                 self.send(PathEventCode.ARM_DONE,
                           struct.pack("<BBBIB", frame.sequence, motor_id,
                                       PathResult.OK, 1456, 0))
@@ -47,6 +50,33 @@ class ArmControlTests(unittest.TestCase):
         self.assertEqual(fake.commands[0].payload, b"\x07\x01\x08\x00")
         self.assertEqual(done.encoder_count, 1456)
         self.assertEqual(done.request_sequence, fake.commands[0].sequence)
+
+    def test_single_move_payload_and_matching_done(self):
+        fake = FakeArmStm32()
+        fake.client.arm_move(7, -1, 6400, 120, 200)
+        done = fake.client.wait_arm_done(7, 0.01)
+        self.assertEqual(fake.commands[0].command, PathCommand.ARM_MOVE)
+        self.assertEqual(fake.commands[0].payload, b"\x07\x01\x00\x19\x78\x00\xc8")
+        self.assertEqual(done.request_sequence, fake.commands[0].sequence)
+
+    def test_cli_move_uses_axis_default_speed_and_single_frame(self):
+        fake = FakeArmStm32()
+
+        class Link:
+            path_client = fake.client
+
+            def close(self):
+                pass
+
+        argv = ["main.py", "--arm-move", "7", "--arm-direction", "-",
+                "--arm-pulses", "6400"]
+        with patch.object(sys, "argv", argv), \
+             patch.object(app, "load_config", return_value={"serial": {}}), \
+             patch.object(app, "SerialPathLink", return_value=Link()):
+            self.assertEqual(app.main(), 0)
+        self.assertEqual(len(fake.commands), 1)
+        self.assertEqual(fake.commands[0].payload,
+                         b"\x07\x01\x00\x19\x78\x00\xfa")
 
     def test_status_and_stop(self):
         fake = FakeArmStm32()
@@ -64,6 +94,13 @@ class ArmControlTests(unittest.TestCase):
         for args in ((4, 1, 8), (7, 0, 8), (7, 1, 0), (7, 1, 33)):
             with self.assertRaises(ValueError):
                 encode_arm_jog(*args)
+
+    def test_move_bounds_reject_unintended_axis_and_speed(self):
+        for args in ((5, 1, 100, 5, 200), (6, 1, 1601, 30, 200),
+                     (7, -1, 6401, 120, 200), (7, -1, 3200, 181, 200),
+                     (6, 1, 1600, 30, 256)):
+            with self.assertRaises(ValueError):
+                encode_arm_move(*args)
 
     def test_stale_status_sequence_is_ignored(self):
         fake = FakeArmStm32()

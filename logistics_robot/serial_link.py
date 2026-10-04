@@ -85,11 +85,15 @@ class SerialPathLink:
                 self.path_client.recover_status_async()
             try:
                 data = connection.read(256)
-                if data:
-                    self.path_client.feed(data)
-            except (self._serial_module.SerialException, OSError) as exc:
+            except (self._serial_module.SerialException, OSError, TypeError) as exc:
+                # pyserial 在另一个线程关闭端口时可能以 fd=None 抛出 TypeError。
+                if self._stop_reader.is_set():
+                    break
                 LOG.warning("STM32 串口断开：%s", exc)
                 self._disconnect()
+                continue
+            if data:
+                self.path_client.feed(data)
 
     def raw(self, payload: bytes) -> None:
         """写入已由 ``protocol`` 编码的一帧命令。"""
@@ -122,6 +126,6 @@ class SerialPathLink:
     def close(self) -> None:
         """关闭路径串口连接。"""
         self._stop_reader.set()
-        self._disconnect()
         if self._reader is not threading.current_thread():
             self._reader.join(timeout=0.2)
+        self._disconnect()

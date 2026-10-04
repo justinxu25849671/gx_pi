@@ -11,7 +11,7 @@ from .path_protocol import (
     AckEvent, ArmDoneEvent, ArmState, ArmStatusEvent, DoneEvent, ErrorEvent,
     FrameDecoder, PathCommand, PathEvent,
     PathPoint, PathResult, PathState, PointDoneEvent, StatusEvent,
-    encode_arm_jog, encode_frame, encode_upload, parse_event,
+    encode_arm_jog, encode_arm_move, encode_frame, encode_upload, parse_event,
 )
 
 
@@ -59,6 +59,7 @@ class PathClient:
         self._sequence = 0
         self._listeners: list[Callable[[PathEvent], None]] = []
         self._terminal = threading.Event()
+        self._last_terminal_event: DoneEvent | ErrorEvent | None = None
         self.current_status: StatusEvent | None = None
         self.last_event: PathEvent | None = None
         self.task_active = False
@@ -126,6 +127,7 @@ class PathClient:
                 self._arm_terminal.set()
             elif isinstance(event, (DoneEvent, ErrorEvent)):
                 self.task_active = False
+                self._last_terminal_event = event
                 self._terminal.set()
             elif isinstance(event, PointDoneEvent):
                 self.task_active = True
@@ -193,6 +195,19 @@ class PathClient:
             raise PathProtocolError("机械臂 ACK 电机编号不匹配")
         self._active_arm_sequence = event.request_sequence
 
+    def arm_move(self, motor_id: int, direction: int, pulses: int,
+                 rpm: int, acceleration: int) -> None:
+        payload = encode_arm_move(motor_id, direction, pulses, rpm, acceleration)
+        with self._lock:
+            self._arm_terminal.clear()
+            self.last_arm_event = None
+            self._active_arm_sequence = None
+        event = self.request(PathCommand.ARM_MOVE, payload)
+        assert isinstance(event, AckEvent)
+        if event.path_id != motor_id:
+            raise PathProtocolError("机械臂 ACK 电机编号不匹配")
+        self._active_arm_sequence = event.request_sequence
+
     def arm_stop(self, motor_id: int) -> None:
         if motor_id not in (5, 6, 7):
             raise ValueError("只能停止 5/6/7 号电机")
@@ -241,7 +256,9 @@ class PathClient:
         return event
 
     def stop(self) -> AckEvent:
-        event = self.request(PathCommand.STOP)
+        # F4 最多用 1 秒确认编码器静止，串口传输和排队需留额外余量。
+        event = self.request(PathCommand.STOP,
+                             timeout_s=max(self._request_timeout_s, 2.0))
         assert isinstance(event, AckEvent)
         return event
 
@@ -255,6 +272,7 @@ class PathClient:
             with self._lock:
                 if self.task_active:
                     raise PathProtocolError("已有路径正在运行，不能并发启动")
+                self._last_terminal_event = None
                 self._terminal.clear()
             start_sent = False
             try:
@@ -284,17 +302,17 @@ class PathClient:
     def wait_until_terminal(self, timeout_s: float | None = None) -> DoneEvent | ErrorEvent:
         if not self._terminal.wait(timeout_s):
             raise PathRequestTimeout("等待路径完成事件超时")
-        event = self.last_event
+        event = self._last_terminal_event
         if not isinstance(event, (DoneEvent, ErrorEvent)):
             raise PathProtocolError("终止信号缺少 DONE/ERROR 事件")
         return event
 
     def wait_until_terminal_with_keepalive(self, keepalive_s: float = 0.25,
                                            timeout_s: float | None = None) -> DoneEvent | ErrorEvent:
-        """等待段完成，同时周期性查询状态，满足 STM32 的链路存活保护。
+        """等待段完成，同时周期性查询状态以发现串口失联。
 
         ``PATH_STATUS_REQ`` 是有效协议帧，也使 ACK 丢失或串口重连后的状态可观察。
-        它不根据理论运行时间推进路径；只有 DONE/ERROR 才会结束等待。
+        它不根据理论运行时间推进路径；只有 DONE 才表示到达。
         """
         if keepalive_s <= 0.0:
             raise ValueError("keepalive_s 必须大于 0")
@@ -305,12 +323,17 @@ class PathClient:
                 raise PathRequestTimeout("等待路径完成事件超时")
             interval = keepalive_s if remaining is None else min(keepalive_s, remaining)
             if self._terminal.wait(interval):
-                event = self.last_event
+                event = self._last_terminal_event
                 if isinstance(event, (DoneEvent, ErrorEvent)):
                     return event
                 raise PathProtocolError("终止信号缺少 DONE/ERROR 事件")
-            # 状态查询失败必须把本段视为未知/失败，不能在调用方继续下一段。
-            self.query_status(timeout_s=self._request_timeout_s)
+            # 丢失 DONE/ERROR 时，终态状态也必须让等待失败，避免永久等待。
+            status = self.query_status(timeout_s=self._request_timeout_s)
+            if self._terminal.is_set():
+                continue
+            if status.state not in (PathState.RUN_X, PathState.RUN_Y):
+                raise PathProtocolError(
+                    f"未收到 DONE/ERROR，STM32 路径状态已是 {status.state.name}；禁止推进下一段")
 
     def connection_lost(self) -> None:
         with self._lock:

@@ -23,6 +23,7 @@ class PathCommand(IntEnum):
     ARM_JOG = 0x20
     ARM_STOP = 0x21
     ARM_STATUS_REQ = 0x22
+    ARM_MOVE = 0x23
 
 
 class PathEventCode(IntEnum):
@@ -180,6 +181,20 @@ def encode_arm_jog(motor_id: int, direction: int, pulses: int) -> bytes:
     if motor_id not in (5, 6, 7) or direction not in (-1, 1) or not 1 <= pulses <= 32:
         raise ValueError("点动只允许 5/6/7 号、方向 +/-、1..32 脉冲")
     return struct.pack("<BBH", motor_id, 0 if direction > 0 else 1, pulses)
+
+
+def encode_arm_move(motor_id: int, direction: int, pulses: int,
+                    rpm: int, acceleration: int) -> bytes:
+    """一次相对位置运动；6 号最多半圈，7 号最多两圈。"""
+    max_pulses = {6: 1600, 7: 6400}
+    max_rpm = {6: 60, 7: 180}
+    if (motor_id not in max_pulses or direction not in (-1, 1) or
+            not 1 <= pulses <= max_pulses[motor_id] or
+            not 1 <= rpm <= max_rpm[motor_id] or
+            not 0 <= acceleration <= 255):
+        raise ValueError("长行程仅支持 6/7 号；6 号≤1600脉冲/60rpm，7 号≤6400脉冲/180rpm")
+    return struct.pack("<BBHHB", motor_id, 0 if direction > 0 else 1,
+                       pulses, rpm, acceleration)
 
 
 def crc16_modbus(data: bytes) -> int:
