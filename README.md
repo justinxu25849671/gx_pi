@@ -89,5 +89,9 @@ python3 main.py --vision-image samples/held_object.jpg --vision-mode combined
 
 松爪前横移/伸缩、动作完成反馈、第一/二层目标区别和一次性放置约束见
 [放置对准接入说明](docs/placement_alignment_manual.md)。当前配置的环检测与三个视觉
-姿态均保持 `calibrated: false`，且仓库没有真实机构动作协议；完成现场标定和反馈适配
+姿态均保持 `calibrated: false`，且自动取放所需的完整机构动作协议尚未接入；完成现场标定和反馈适配
 前，自动放置会被安全拒绝。
+
+机械臂 5/6/7 号 Emm_V5 电机的单轴小步调试命令见
+[机械臂手动点动说明](docs/arm_jog_manual.md)。该入口用于相机调试；自动取放仍需
+方向、行程和限位标定。

@@ -11,7 +11,7 @@ from .config import load_config
 from .calibration import FrameRectifier
 from .node_route import NineNodeRouteMap
 from .path_client import PathProtocolError
-from .path_protocol import DoneEvent, ErrorEvent, PathPoint
+from .path_protocol import DoneEvent, ErrorEvent, PathPoint, PathResult
 from .route_executor import RouteExecutor
 from .ring_detection import RingDetector, draw_ring_debug
 from .serial_link import SerialPathLink
@@ -186,6 +186,16 @@ def main() -> int:
     parser.add_argument("--keep-path-origin", action="store_true", help="启动前不重置 STM32 局部原点")
     parser.add_argument("--path-status", action="store_true", help="查询 STM32 当前路径状态后退出")
     parser.add_argument("--path-stop", action="store_true", help="停止 STM32 当前路径后退出")
+    parser.add_argument("--arm-jog", type=int, metavar="ID",
+                        help="手动点动机械臂电机 5/6/7；每次最多 32 脉冲")
+    parser.add_argument("--arm-direction", choices=("+", "-"), default="+",
+                        help="点动原始方向，尚未对应机械臂的实际方向")
+    parser.add_argument("--arm-pulses", type=int, default=8,
+                        help="本次点动 1..32 脉冲，默认 8")
+    parser.add_argument("--arm-stop", type=int, metavar="ID",
+                        help="立即停止 5/6/7 号中的指定电机")
+    parser.add_argument("--arm-status", type=int, metavar="ID",
+                        help="查询指定机械臂电机的状态和编码器计数")
     parser.add_argument("--vision-debug", action="store_true", help="独立调试物料识别相机，不访问 STM32")
     parser.add_argument("--vision-camera-index", type=int,
                         help="仅本次运行覆盖 object_camera.index")
@@ -198,6 +208,12 @@ def main() -> int:
     arguments = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     config = load_config(arguments.config)
+
+    arm_selected = any(motor_id is not None for motor_id in
+                       (arguments.arm_jog, arguments.arm_stop, arguments.arm_status))
+    if arm_selected and (arguments.vision_image or arguments.vision_debug or
+                         arguments.dry_run or arguments.plan_path or arguments.task):
+        parser.error("机械臂手动命令不能与视觉、任务码或路径预览模式同用")
 
     if arguments.vision_image:
         if arguments.vision_debug or arguments.vision_camera_index is not None:
@@ -237,9 +253,18 @@ def main() -> int:
 
     path_actions = sum(bool(value) for value in
                        (arguments.execute_path, arguments.execute_node_route,
-                        arguments.path_status, arguments.path_stop))
+                        arguments.path_status, arguments.path_stop,
+                        arguments.arm_jog, arguments.arm_stop, arguments.arm_status))
     if path_actions != 1:
-        parser.error("必须选择 --execute-path、--path-status 或 --path-stop 之一")
+        parser.error("必须选择一个路径或机械臂操作")
+    if ((arguments.arm_direction != "+" or arguments.arm_pulses != 8) and
+            arguments.arm_jog is None):
+        parser.error("--arm-direction/--arm-pulses 必须与 --arm-jog 同用")
+    for motor_id in (arguments.arm_jog, arguments.arm_stop, arguments.arm_status):
+        if motor_id is not None and motor_id not in (5, 6, 7):
+            parser.error("机械臂电机编号只能为 5、6、7")
+    if arguments.arm_jog is not None and not 1 <= arguments.arm_pulses <= 32:
+        parser.error("--arm-pulses 必须在 1..32")
     link = SerialPathLink(**config["serial"])
     link.path_client.add_listener(_log_path_event)
     try:
@@ -250,6 +275,31 @@ def main() -> int:
                      status.path_id, status.state.name, point_text, status.segment.name,
                      status.estimated_x_mm, status.estimated_y_mm,
                      status.active_target_x_mm, status.active_target_y_mm)
+        elif arguments.arm_status is not None:
+            status = link.path_client.arm_status(arguments.arm_status)
+            LOG.info("机械臂 %d 号：%s，结果=%s，编码器计数=%d，反向标志=%s",
+                     status.motor_id, status.state.name, status.result.name,
+                     status.encoder_count, status.reverse)
+        elif arguments.arm_stop is not None:
+            link.path_client.arm_stop(arguments.arm_stop)
+            LOG.info("机械臂 %d 号停止命令已获 ACK", arguments.arm_stop)
+        elif arguments.arm_jog is not None:
+            direction = 1 if arguments.arm_direction == "+" else -1
+            LOG.warning("即将点动 %d 号电机：原始方向 %s，%d 脉冲；现场观察实际方向",
+                        arguments.arm_jog, arguments.arm_direction, arguments.arm_pulses)
+            try:
+                link.path_client.arm_jog(arguments.arm_jog, direction, arguments.arm_pulses)
+                terminal = link.path_client.wait_arm_done(arguments.arm_jog)
+                if terminal.result != PathResult.OK:
+                    raise PathProtocolError(f"机械臂 {terminal.motor_id} 号未完成：{terminal.result.name}")
+            except Exception:
+                try:
+                    link.path_client.arm_stop(arguments.arm_jog)
+                except Exception as stop_error:
+                    LOG.error("点动失败后停止命令未确认：%s；请检查实物并切断电机电源", stop_error)
+                raise
+            LOG.info("机械臂 %d 号点动完成：编码器计数=%d，反向标志=%s",
+                     terminal.motor_id, terminal.encoder_count, terminal.reverse)
         elif arguments.path_stop:
             link.stop_path()
             LOG.info("PATH_STOP 已获 ACK")
@@ -273,8 +323,12 @@ def main() -> int:
             completions = executor.execute(plan, arguments.path_id)
             LOG.info("节点路线完成：%d 段；最终节点 %d", len(completions), plan.nodes[-1])
     except KeyboardInterrupt:
-        link.stop_path()
-        LOG.warning("用户取消，PATH_STOP 已获 ACK")
+        if arguments.arm_jog is not None:
+            link.path_client.arm_stop(arguments.arm_jog)
+            LOG.warning("用户取消，机械臂 %d 号停止命令已获 ACK", arguments.arm_jog)
+        else:
+            link.stop_path()
+            LOG.warning("用户取消，PATH_STOP 已获 ACK")
         return 130
     finally:
         link.close()

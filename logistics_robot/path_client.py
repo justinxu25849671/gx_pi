@@ -8,9 +8,10 @@ import time
 from typing import Callable, Iterable
 
 from .path_protocol import (
-    AckEvent, DoneEvent, ErrorEvent, FrameDecoder, PathCommand, PathEvent,
+    AckEvent, ArmDoneEvent, ArmState, ArmStatusEvent, DoneEvent, ErrorEvent,
+    FrameDecoder, PathCommand, PathEvent,
     PathPoint, PathResult, PathState, PointDoneEvent, StatusEvent,
-    encode_frame, encode_upload, parse_event,
+    encode_arm_jog, encode_frame, encode_upload, parse_event,
 )
 
 
@@ -33,7 +34,8 @@ class PathNackError(PathProtocolError):
 
 
 class _Pending:
-    def __init__(self) -> None:
+    def __init__(self, sequence: int = 0) -> None:
+        self.sequence = sequence
         self.ready = threading.Event()
         self.event: PathEvent | None = None
 
@@ -50,6 +52,10 @@ class PathClient:
         self._workflow_lock = threading.Lock()
         self._pending: dict[int, _Pending] = {}
         self._status_pending: _Pending | None = None
+        self._arm_status_pending: _Pending | None = None
+        self._arm_terminal = threading.Event()
+        self.last_arm_event: ArmDoneEvent | None = None
+        self._active_arm_sequence: int | None = None
         self._sequence = 0
         self._listeners: list[Callable[[PathEvent], None]] = []
         self._terminal = threading.Event()
@@ -90,6 +96,14 @@ class PathClient:
             self.last_event = event
             if isinstance(event, AckEvent):
                 pending = self._pending.pop(event.request_sequence, None)
+                if pending is None and self._arm_status_pending is not None:
+                    if self._arm_status_pending.sequence == event.request_sequence:
+                        pending = self._arm_status_pending
+                        self._arm_status_pending = None
+                if pending is None and self._status_pending is not None:
+                    if self._status_pending.sequence == event.request_sequence:
+                        pending = self._status_pending
+                        self._status_pending = None
                 if pending is not None:
                     pending.event = event
                     pending.ready.set()
@@ -101,6 +115,15 @@ class PathClient:
                     pending.event = event
                     pending.ready.set()
                 self.task_active = event.state in (PathState.RUN_X, PathState.RUN_Y)
+            elif isinstance(event, ArmStatusEvent):
+                pending = self._arm_status_pending
+                if pending is not None and pending.sequence == event.request_sequence:
+                    self._arm_status_pending = None
+                    pending.event = event
+                    pending.ready.set()
+            elif isinstance(event, ArmDoneEvent):
+                self.last_arm_event = event
+                self._arm_terminal.set()
             elif isinstance(event, (DoneEvent, ErrorEvent)):
                 self.task_active = False
                 self._terminal.set()
@@ -121,17 +144,21 @@ class PathClient:
         return pending.event
 
     def request(self, command: PathCommand, payload: bytes = b"",
-                timeout_s: float | None = None) -> AckEvent | StatusEvent:
+                timeout_s: float | None = None) -> AckEvent | StatusEvent | ArmStatusEvent:
         if not self.connection_available:
             raise ConnectionError("STM32 串口当前不可用")
         with self._request_lock:
             sequence = self._next_sequence()
-            pending = _Pending()
+            pending = _Pending(sequence)
             with self._lock:
                 if command == PathCommand.STATUS_REQ:
                     if self._status_pending is not None:
                         raise PathProtocolError("已有状态查询正在等待")
                     self._status_pending = pending
+                elif command == PathCommand.ARM_STATUS_REQ:
+                    if self._arm_status_pending is not None:
+                        raise PathProtocolError("已有机械臂状态查询正在等待")
+                    self._arm_status_pending = pending
                 else:
                     self._pending[sequence] = pending
             try:
@@ -143,14 +170,60 @@ class PathClient:
                     self._pending.pop(sequence, None)
                     if self._status_pending is pending:
                         self._status_pending = None
+                    if self._arm_status_pending is pending:
+                        self._arm_status_pending = None
                 raise
             if isinstance(event, AckEvent):
                 if not event.accepted or event.result != PathResult.OK:
                     raise PathNackError(command, event)
                 return event
-            if not isinstance(event, StatusEvent):
+            if not isinstance(event, (StatusEvent, ArmStatusEvent)):
                 raise PathProtocolError(f"{command.name} 收到意外事件")
             return event
+
+    def arm_jog(self, motor_id: int, direction: int, pulses: int) -> None:
+        payload = encode_arm_jog(motor_id, direction, pulses)
+        with self._lock:
+            self._arm_terminal.clear()
+            self.last_arm_event = None
+            self._active_arm_sequence = None
+        event = self.request(PathCommand.ARM_JOG, payload)
+        assert isinstance(event, AckEvent)
+        if event.path_id != motor_id:
+            raise PathProtocolError("机械臂 ACK 电机编号不匹配")
+        self._active_arm_sequence = event.request_sequence
+
+    def arm_stop(self, motor_id: int) -> None:
+        if motor_id not in (5, 6, 7):
+            raise ValueError("只能停止 5/6/7 号电机")
+        event = self.request(PathCommand.ARM_STOP, bytes((motor_id,)))
+        assert isinstance(event, AckEvent)
+        if event.path_id != motor_id:
+            raise PathProtocolError("机械臂停止 ACK 电机编号不匹配")
+
+    def arm_status(self, motor_id: int) -> ArmStatusEvent:
+        if motor_id not in (5, 6, 7):
+            raise ValueError("只能查询 5/6/7 号电机")
+        event = self.request(PathCommand.ARM_STATUS_REQ, bytes((motor_id,)))
+        assert isinstance(event, ArmStatusEvent)
+        if event.motor_id != motor_id:
+            raise PathProtocolError("机械臂状态电机编号不匹配")
+        return event
+
+    def wait_arm_done(self, motor_id: int, timeout_s: float = 4.0) -> ArmDoneEvent:
+        deadline = time.monotonic() + timeout_s
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise PathRequestTimeout("等待机械臂到位事件超时；请查询状态并人工检查")
+            if self._arm_terminal.wait(min(0.2, remaining)):
+                event = self.last_arm_event
+                if (event is None or event.motor_id != motor_id or
+                        event.request_sequence != self._active_arm_sequence):
+                    raise PathProtocolError("机械臂到位事件编号或请求序号不匹配")
+                return event
+            # F4 也通过状态查询看到链路活性；查询失败时不推定动作完成。
+            self.arm_status(motor_id)
 
     def query_status(self, timeout_s: float | None = None) -> StatusEvent:
         event = self.request(PathCommand.STATUS_REQ, timeout_s=timeout_s)
@@ -248,6 +321,9 @@ class PathClient:
             if self._status_pending is not None:
                 pending.append(self._status_pending)
                 self._status_pending = None
+            if self._arm_status_pending is not None:
+                pending.append(self._arm_status_pending)
+                self._arm_status_pending = None
         # 唤醒等待者，由其按“状态未知”处理。
         for item in pending:
             item.ready.set()

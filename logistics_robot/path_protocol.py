@@ -20,6 +20,9 @@ class PathCommand(IntEnum):
     STOP = 0x13
     STATUS_REQ = 0x14
     RESET_ORIGIN = 0x15
+    ARM_JOG = 0x20
+    ARM_STOP = 0x21
+    ARM_STATUS_REQ = 0x22
 
 
 class PathEventCode(IntEnum):
@@ -29,6 +32,8 @@ class PathEventCode(IntEnum):
     DONE = 0x93
     ERROR = 0x94
     STATUS = 0x95
+    ARM_STATUS = 0xA0
+    ARM_DONE = 0xA1
 
 
 class PathState(IntEnum):
@@ -38,6 +43,13 @@ class PathState(IntEnum):
     RUN_Y = 3
     STOPPED = 4
     ERROR = 5
+
+
+class ArmState(IntEnum):
+    IDLE = 0
+    MOVING = 1
+    STOPPED = 2
+    ERROR = 3
 
 
 class PathSegment(IntEnum):
@@ -140,7 +152,34 @@ class StatusEvent:
     active_target_y_mm: int
 
 
-PathEvent = Union[AckEvent, PointDoneEvent, DoneEvent, ErrorEvent, StatusEvent]
+@dataclass(frozen=True)
+class ArmStatusEvent:
+    request_sequence: int
+    motor_id: int
+    state: ArmState
+    result: PathResult
+    encoder_count: int
+    reverse: bool
+
+
+@dataclass(frozen=True)
+class ArmDoneEvent:
+    request_sequence: int
+    motor_id: int
+    result: PathResult
+    encoder_count: int
+    reverse: bool
+
+
+PathEvent = Union[AckEvent, PointDoneEvent, DoneEvent, ErrorEvent, StatusEvent,
+                  ArmStatusEvent, ArmDoneEvent]
+
+
+def encode_arm_jog(motor_id: int, direction: int, pulses: int) -> bytes:
+    """原始方向符号尚未标定；每次最多 32 个位置脉冲。"""
+    if motor_id not in (5, 6, 7) or direction not in (-1, 1) or not 1 <= pulses <= 32:
+        raise ValueError("点动只允许 5/6/7 号、方向 +/-、1..32 脉冲")
+    return struct.pack("<BBH", motor_id, 0 if direction > 0 else 1, pulses)
 
 
 def crc16_modbus(data: bytes) -> int:
@@ -238,6 +277,7 @@ def parse_event(frame: Frame) -> PathEvent:
         PathEventCode.ACK: 3, PathEventCode.NACK: 3,
         PathEventCode.POINT_DONE: 18, PathEventCode.DONE: 10,
         PathEventCode.ERROR: 12, PathEventCode.STATUS: 21,
+        PathEventCode.ARM_STATUS: 9, PathEventCode.ARM_DONE: 8,
     }[code]
     if len(payload) != expected:
         raise ValueError(f"事件 {code.name} payload 应为 {expected} 字节，实际 {len(payload)}")
@@ -252,6 +292,13 @@ def parse_event(frame: Frame) -> PathEvent:
         if code == PathEventCode.ERROR:
             path_id, point_index, segment, error, x_mm, y_mm = struct.unpack("<BBBBii", payload)
             return ErrorEvent(path_id, point_index, PathSegment(segment), PathResult(error), x_mm, y_mm)
+        if code == PathEventCode.ARM_STATUS:
+            sequence, motor_id, state, result, count, reverse = struct.unpack("<BBBBIB", payload)
+            return ArmStatusEvent(sequence, motor_id, ArmState(state),
+                                  PathResult(result), count, bool(reverse))
+        if code == PathEventCode.ARM_DONE:
+            sequence, motor_id, result, count, reverse = struct.unpack("<BBBIB", payload)
+            return ArmDoneEvent(sequence, motor_id, PathResult(result), count, bool(reverse))
         path_id, state, point_index, segment, count, x_mm, y_mm, tx_mm, ty_mm = struct.unpack(
             "<BBBBBiiii", payload)
         return StatusEvent(path_id, PathState(state), point_index, PathSegment(segment), count,
