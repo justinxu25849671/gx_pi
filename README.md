@@ -70,6 +70,17 @@ python3 -B main.py --arm-stop 7
 
 这些命令是独立示例，先确认当前剩余行程，再逐条执行。现场已确认：5 号 `+`/``-`` 对应观察视角的左/右转；6 号 `+` 向前，`-` 未单独验证；7 号 `+` 下降、`-` 上升。三轴均无实体限位开关，也没有自动回零。6 号齿条当前剩余行程不能由脉冲上限推断；发现方向不符、接近端点或卡滞时，直接切断电机电源。`ARM_DONE` 只表示编码器达到固件当前判据，不证明机构位置或视觉目标已满足。
 
+## 舵机手动调试
+
+后部放料为 `rear`：ID 0、YM-3220、0–270°、TIM4_CH3/PB8。夹爪为 `gripper`：ID 1、LFD-01M、0–180°、TIM4_CH4/PB9。两路初始映射均为 20 ms 周期和 500–2500 μs 脉宽；具体端点、方向和机构等待时间记录在 `config.json` 的 `servos` 中，改动后应同步修改 F4 的 `servo.c` 配置。
+
+```bash
+python3 -B main.py --servo rear 135
+python3 -B main.py --servo gripper 90
+```
+
+首次调试应先卸下机构负载，从当前机械位置附近的小角度变化开始。命令角度最多一位小数。Pi 收到 ACK 后按配置等待一段时间，但 ACK 只表示 F4 已接受命令并更新 PWM；没有位置传感器，不能据此确认舵机或机构已到位。
+
 ## 协议、代码与验证
 
 Pi/F4 使用 `uart3`（F4 PB10/PB11，115200 8N1）的二进制帧：
@@ -78,7 +89,7 @@ Pi/F4 使用 `uart3`（F4 PB10/PB11，115200 8N1）的二进制帧：
 AA 55 | version=01 | command | sequence | length:u16LE | payload | CRC16-Modbus:u16LE
 ```
 
-路径命令为 `0x10..0x15`，机械臂命令为 `ARM_JOG=0x20`、`ARM_STOP=0x21`、`ARM_STATUS_REQ=0x22`、`ARM_MOVE=0x23`；ACK/NACK 为 `0x90/0x91`，路径 `DONE/ERROR/STATUS` 为 `0x93/0x94/0x95`，机械臂 `STATUS/DONE` 为 `0xA0/0xA1`。实现分别在 `logistics_robot/path_protocol.py`、`path_client.py`、`route_executor.py`、`vision.py`、`ring_detection.py` 和 `placement_alignment.py`。
+路径命令为 `0x10..0x15`，机械臂命令为 `ARM_JOG=0x20`、`ARM_STOP=0x21`、`ARM_STATUS_REQ=0x22`、`ARM_MOVE=0x23`，舵机命令为 `SERVO_SET_ANGLE=0x24`，负载是 `servo_id:u8 + angle_tenths:u16LE`；ACK/NACK 为 `0x90/0x91`，其中舵机回包的 ID 字节必须等于请求的舵机编号。路径 `DONE/ERROR/STATUS` 为 `0x93/0x94/0x95`，机械臂 `STATUS/DONE` 为 `0xA0/0xA1`。实现分别在 `logistics_robot/path_protocol.py`、`path_client.py`、`route_executor.py`、`vision.py`、`ring_detection.py` 和 `placement_alignment.py`。
 
 ```bash
 python3 -m unittest discover -s tests -v

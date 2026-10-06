@@ -7,7 +7,7 @@ from logistics_robot.path_protocol import (
     AckEvent, DoneEvent, ErrorEvent, FrameDecoder, MAX_PAYLOAD, PathCommand,
     PathEventCode, PathPoint, PathResult, PathSegment, PathState,
     PointDoneEvent, StatusEvent, crc16_modbus, encode_frame,
-    encode_upload, parse_event,
+    encode_servo_angle, encode_upload, parse_event,
 )
 
 
@@ -112,6 +112,13 @@ class PathProtocolTests(unittest.TestCase):
                       PathPoint(0, 0, 20, 256), PathPoint(0, 0, flags=1)):
             with self.assertRaises(ValueError):
                 point.validate()
+
+    def test_servo_angle_encoding_and_limits(self) -> None:
+        self.assertEqual(encode_servo_angle(0, 2700), b"\x00\x8c\x0a")
+        self.assertEqual(encode_servo_angle(1, 1800), b"\x01\x08\x07")
+        for servo_id, angle in ((2, 0), (0, 2701), (1, 1801), (1, -1)):
+            with self.assertRaises(ValueError):
+                encode_servo_angle(servo_id, angle)
 
 
 if __name__ == "__main__":

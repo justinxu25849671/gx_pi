@@ -44,6 +44,31 @@ def _validate_vision(config: dict[str, Any]) -> None:
         raise ValueError("vision_calibration.camera 未标定时不能启用 apply")
 
 
+def _validate_servos(config: dict[str, Any]) -> None:
+    servos = config.get("servos", {})
+    expected = {
+        "rear": {"id": 0, "max_angle_deg": 270},
+        "gripper": {"id": 1, "max_angle_deg": 180},
+    }
+    if set(servos) != set(expected):
+        raise ValueError("servos 必须且只能包含 rear/gripper")
+    for name, fixed in expected.items():
+        item = servos[name]
+        if int(item.get("id", -1)) != fixed["id"]:
+            raise ValueError(f"servos.{name}.id 必须为 {fixed['id']}")
+        if int(item.get("max_angle_deg", -1)) != fixed["max_angle_deg"]:
+            raise ValueError(
+                f"servos.{name}.max_angle_deg 必须为 {fixed['max_angle_deg']}")
+        minimum = int(item.get("min_pulse_us", 0))
+        maximum = int(item.get("max_pulse_us", 0))
+        if minimum <= 0 or maximum <= minimum:
+            raise ValueError(f"servos.{name} 脉宽范围无效")
+        if not isinstance(item.get("reversed"), bool):
+            raise ValueError(f"servos.{name}.reversed 必须为布尔值")
+        if float(item.get("wait_s", 0)) <= 0:
+            raise ValueError(f"servos.{name}.wait_s 必须大于 0")
+
+
 def load_config(path: str | Path) -> dict[str, Any]:
     """读取 JSON 配置，并检查应用启动所需的顶层字段。
 
@@ -52,11 +77,12 @@ def load_config(path: str | Path) -> dict[str, Any]:
     """
     with Path(path).open("r", encoding="utf-8") as stream:
         config = json.load(stream)
-    required = {"serial", "node_route", "object_camera", "qr_camera",
+    required = {"serial", "node_route", "object_camera", "qr_camera", "servos",
                 "hsv_colors", "ring_detection", "vision_calibration",
                 "placement_alignment"}
     missing = required - config.keys()
     if missing:
         raise ValueError(f"配置缺少字段：{', '.join(sorted(missing))}")
     _validate_vision(config)
+    _validate_servos(config)
     return config

@@ -40,7 +40,9 @@ class FakeStm32:
             return
         if command == PathCommand.START:
             self.running = True
-        path_id = frame.payload[0] if command in (PathCommand.UPLOAD, PathCommand.START) else 0
+        path_id = (frame.payload[0]
+                   if command in (PathCommand.UPLOAD, PathCommand.START,
+                                  PathCommand.SERVO_SET_ANGLE) else 0)
         self._send(PathEventCode.ACK, bytes((frame.sequence, path_id, PathResult.OK)))
 
 
@@ -101,6 +103,14 @@ class PathClientTests(unittest.TestCase):
         fake = FakeStm32()
         fake.client.stop()
         self.assertEqual(fake.commands[-1][0], PathCommand.STOP)
+
+    def test_servo_angle_uses_device_id_in_ack(self) -> None:
+        fake = FakeStm32()
+        event = fake.client.set_servo_angle(1, 905)
+        self.assertEqual(event.path_id, 1)
+        self.assertEqual(fake.commands[-1],
+                         (PathCommand.SERVO_SET_ANGLE,
+                          fake.commands[-1][1], b"\x01\x89\x03"))
 
     def test_reconnect_clears_partial_decoder(self) -> None:
         fake = FakeStm32()

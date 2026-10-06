@@ -24,6 +24,7 @@ class PathCommand(IntEnum):
     ARM_STOP = 0x21
     ARM_STATUS_REQ = 0x22
     ARM_MOVE = 0x23
+    SERVO_SET_ANGLE = 0x24
 
 
 class PathEventCode(IntEnum):
@@ -195,6 +196,17 @@ def encode_arm_move(motor_id: int, direction: int, pulses: int,
         raise ValueError("长行程仅支持 6/7 号；6 号≤1600脉冲/60rpm，7 号≤6400脉冲/180rpm")
     return struct.pack("<BBHHB", motor_id, 0 if direction > 0 else 1,
                        pulses, rpm, acceleration)
+
+
+def encode_servo_angle(servo_id: int, angle_tenths: int) -> bytes:
+    """编码舵机编号和 0.1° 单位的目标角度。"""
+    max_angle_tenths = {0: 2700, 1: 1800}
+    if servo_id not in max_angle_tenths:
+        raise ValueError("舵机编号只能为 0（后部放料）或 1（夹爪）")
+    if not 0 <= angle_tenths <= max_angle_tenths[servo_id]:
+        raise ValueError(
+            f"{servo_id} 号舵机角度必须在 0..{max_angle_tenths[servo_id] / 10:g}°")
+    return struct.pack("<BH", servo_id, angle_tenths)
 
 
 def crc16_modbus(data: bytes) -> int:

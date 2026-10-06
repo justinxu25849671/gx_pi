@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import math
 from pathlib import Path
 import time
 
@@ -202,6 +203,8 @@ def main() -> int:
                         help="立即停止 5/6/7 号中的指定电机")
     parser.add_argument("--arm-status", type=int, metavar="ID",
                         help="查询指定机械臂电机的状态和编码器计数")
+    parser.add_argument("--servo", nargs=2, metavar=("NAME", "ANGLE"),
+                        help="设置单个舵机角度：rear 0..270 或 gripper 0..180")
     parser.add_argument("--vision-debug", action="store_true", help="独立调试物料识别相机，不访问 STM32")
     parser.add_argument("--vision-camera-index", type=int,
                         help="仅本次运行覆盖 object_camera.index")
@@ -218,9 +221,10 @@ def main() -> int:
     arm_selected = any(motor_id is not None for motor_id in
                        (arguments.arm_jog, arguments.arm_move,
                         arguments.arm_stop, arguments.arm_status))
-    if arm_selected and (arguments.vision_image or arguments.vision_debug or
-                         arguments.dry_run or arguments.plan_path or arguments.task):
-        parser.error("机械臂手动命令不能与视觉、任务码或路径预览模式同用")
+    mechanism_selected = arm_selected or arguments.servo is not None
+    if mechanism_selected and (arguments.vision_image or arguments.vision_debug or
+                               arguments.dry_run or arguments.plan_path or arguments.task):
+        parser.error("机构手动命令不能与视觉、任务码或路径预览模式同用")
 
     if arguments.vision_image:
         if arguments.vision_debug or arguments.vision_camera_index is not None:
@@ -262,7 +266,8 @@ def main() -> int:
                        (arguments.execute_path, arguments.execute_node_route,
                         arguments.path_status, arguments.path_stop,
                         arguments.arm_jog, arguments.arm_move,
-                        arguments.arm_stop, arguments.arm_status))
+                        arguments.arm_stop, arguments.arm_status,
+                        arguments.servo))
     if path_actions != 1:
         parser.error("必须选择一个路径或机械臂操作")
     arm_motion_id = arguments.arm_move if arguments.arm_move is not None else arguments.arm_jog
@@ -281,6 +286,26 @@ def main() -> int:
         parser.error("--arm-pulses 必须在 1..32")
     move_rpm = None
     move_acceleration = None
+    servo_name = None
+    servo_angle_tenths = None
+    servo_config = None
+    if arguments.servo is not None:
+        servo_name, raw_angle = arguments.servo
+        if servo_name not in config["servos"]:
+            parser.error("--servo NAME 只能为 rear 或 gripper")
+        try:
+            angle = float(raw_angle)
+        except ValueError:
+            parser.error("--servo ANGLE 必须是数字")
+        if not math.isfinite(angle):
+            parser.error("--servo ANGLE 必须是有限数字")
+        servo_config = config["servos"][servo_name]
+        servo_angle_tenths = round(angle * 10)
+        if abs(angle * 10 - servo_angle_tenths) > 1e-6:
+            parser.error("--servo ANGLE 最多保留一位小数")
+        if not 0 <= angle <= float(servo_config["max_angle_deg"]):
+            parser.error(
+                f"{servo_name} 角度必须在 0..{servo_config['max_angle_deg']}°")
     if arguments.arm_move is not None:
         if arguments.arm_move not in (6, 7):
             parser.error("--arm-move 只支持 6、7 号电机")
@@ -313,6 +338,13 @@ def main() -> int:
         elif arguments.arm_stop is not None:
             link.path_client.arm_stop(arguments.arm_stop)
             LOG.info("机械臂 %d 号停止命令已获 ACK", arguments.arm_stop)
+        elif servo_config is not None:
+            assert servo_name is not None and servo_angle_tenths is not None
+            link.path_client.set_servo_angle(int(servo_config["id"]), servo_angle_tenths)
+            LOG.info("舵机 %s（ID=%d）目标 %.1f° 已获 ACK；等待 %.2fs 仅用于调试时序",
+                     servo_name, servo_config["id"], servo_angle_tenths / 10.0,
+                     servo_config["wait_s"])
+            time.sleep(float(servo_config["wait_s"]))
         elif arguments.arm_jog is not None:
             jog_direction = arguments.arm_direction or "+"
             direction = 1 if jog_direction == "+" else -1
@@ -382,6 +414,8 @@ def main() -> int:
         if arm_motion_id is not None:
             link.path_client.arm_stop(arm_motion_id)
             LOG.warning("用户取消，机械臂 %d 号停止命令已获 ACK", arm_motion_id)
+        elif servo_config is not None:
+            LOG.warning("用户取消等待；舵机 PWM 保持最后一次已确认的目标")
         else:
             link.stop_path()
             LOG.warning("用户取消，PATH_STOP 已获 ACK")

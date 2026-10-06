@@ -11,7 +11,8 @@ from .path_protocol import (
     AckEvent, ArmDoneEvent, ArmState, ArmStatusEvent, DoneEvent, ErrorEvent,
     FrameDecoder, PathCommand, PathEvent,
     PathPoint, PathResult, PathState, PointDoneEvent, StatusEvent,
-    encode_arm_jog, encode_arm_move, encode_frame, encode_upload, parse_event,
+    encode_arm_jog, encode_arm_move, encode_frame, encode_servo_angle,
+    encode_upload, parse_event,
 )
 
 
@@ -223,6 +224,15 @@ class PathClient:
         assert isinstance(event, ArmStatusEvent)
         if event.motor_id != motor_id:
             raise PathProtocolError("机械臂状态电机编号不匹配")
+        return event
+
+    def set_servo_angle(self, servo_id: int, angle_tenths: int) -> AckEvent:
+        """设置舵机角度；ACK 只表示 F4 已接受并更新 PWM。"""
+        payload = encode_servo_angle(servo_id, angle_tenths)
+        event = self.request(PathCommand.SERVO_SET_ANGLE, payload)
+        assert isinstance(event, AckEvent)
+        if event.path_id != servo_id:
+            raise PathProtocolError("舵机 ACK 编号不匹配")
         return event
 
     def wait_arm_done(self, motor_id: int, timeout_s: float = 4.0) -> ArmDoneEvent:
