@@ -1,0 +1,55 @@
+{
+  "version": 1,
+  "name": "single_item_ring_1",
+  "target_ring_id": 1,
+  "material": {
+    "table_top_height_mm": 140,
+    "top_diameter_mm": 30,
+    "bottom_diameter_mm": 50,
+    "height_mm": 60
+  },
+  "gripper": {
+    "open_angle_deg": 110,
+    "closed_angle_deg": 180,
+    "wait_s": null
+  },
+  "axes": {
+    "5": {
+      "positive_motion": null,
+      "negative_motion": null,
+      "min_position_pulses": null,
+      "max_position_pulses": null,
+      "max_single_move_pulses": null,
+      "rpm": null,
+      "acceleration": null
+    },
+    "6": {
+      "positive_motion": null,
+      "negative_motion": null,
+      "min_position_pulses": null,
+      "max_position_pulses": null,
+      "max_single_move_pulses": null,
+      "rpm": null,
+      "acceleration": null
+    },
+    "7": {
+      "positive_motion": null,
+      "negative_motion": null,
+      "min_position_pulses": null,
+      "max_position_pulses": null,
+      "max_single_move_pulses": null,
+      "rpm": null,
+      "acceleration": null
+    }
+  },
+  "poses": {
+    "observation": {"5": null, "6": null, "7": null},
+    "platform_pick": {"6": null, "7": null},
+    "transport": {"6": null, "7": null},
+    "rear_place": {"5": null, "6": null, "7": null},
+    "rear_pick": {"5": null, "6": null, "7": null},
+    "ring_place": {"5": null, "6": null, "7": null},
+    "ring_pick": {"5": null, "6": null, "7": null}
+  },
+  "chassis_segments": []
+}

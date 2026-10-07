@@ -59,6 +59,8 @@ def _validate_servos(config: dict[str, Any]) -> None:
         if int(item.get("max_angle_deg", -1)) != fixed["max_angle_deg"]:
             raise ValueError(
                 f"servos.{name}.max_angle_deg 必须为 {fixed['max_angle_deg']}")
+        if not isinstance(item.get("enabled"), bool):
+            raise ValueError(f"servos.{name}.enabled 必须为布尔值")
         minimum = int(item.get("min_pulse_us", 0))
         maximum = int(item.get("max_pulse_us", 0))
         if minimum <= 0 or maximum <= minimum:

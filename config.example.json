@@ -7,6 +7,7 @@
   },
   "servos": {
     "rear": {
+      "enabled": false,
       "id": 0,
       "model": "YM-3220",
       "max_angle_deg": 270,
@@ -16,6 +17,7 @@
       "wait_s": 1.0
     },
     "gripper": {
+      "enabled": true,
       "id": 1,
       "model": "LFD-01M",
       "max_angle_deg": 180,

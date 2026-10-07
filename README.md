@@ -59,16 +59,29 @@ python3 -B main.py --vision-image /path/to/photo.jpg --vision-mode combined
 
 ## 机械臂手动调试
 
-5 号是旋转轴，6 号是前后轴，7 号是丝杆升降；三轴与底盘共用 F4 的 Emm_V5 总线。`--arm-jog` 固定 5 rpm、加速度档 10，每次 1–32 脉冲，默认 8。`--arm-move` 只支持 6/7 号，必须显式指定方向和脉冲数；6 号上限 1600 脉冲、60 rpm，7 号上限 6400 脉冲、180 rpm。默认速度分别为 30/120 rpm，加速度档 250。
+5 号是旋转轴，6 号是前后轴，7 号是丝杆升降；三轴与底盘共用 F4 的 Emm_V5 总线。`--arm-jog` 固定 5 rpm、加速度档 10，每次 1–32 脉冲，默认 8。`--arm-move` 支持 5/6/7 号，必须显式指定方向和脉冲数；5 号协议硬上限为 3200 脉冲、10 rpm，默认 5 rpm；6 号上限 1600 脉冲、60 rpm，7 号上限 6400 脉冲、180 rpm。6/7 号默认速度为 30/120 rpm，加速度档默认 250。硬上限不是机械安全行程，现场仍须从小脉冲低速开始。
 
 ```bash
 python3 -B main.py --arm-status 7
+python3 -B main.py --arm-move 5 --arm-direction + --arm-pulses 32 --arm-rpm 5 --arm-acceleration 100
 python3 -B main.py --arm-jog 7 --arm-direction - --arm-pulses 8
 python3 -B main.py --arm-move 7 --arm-direction - --arm-pulses 320 --arm-rpm 20 --arm-acceleration 100
 python3 -B main.py --arm-stop 7
 ```
 
-这些命令是独立示例，先确认当前剩余行程，再逐条执行。现场已确认：5 号 `+`/``-`` 对应观察视角的左/右转；6 号 `+` 向前，`-` 未单独验证；7 号 `+` 下降、`-` 上升。三轴均无实体限位开关，也没有自动回零。6 号齿条当前剩余行程不能由脉冲上限推断；发现方向不符、接近端点或卡滞时，直接切断电机电源。`ARM_DONE` 只表示编码器达到固件当前判据，不证明机构位置或视觉目标已满足。
+这些命令是独立示例，先确认当前剩余行程，再逐条执行。现场已确认：5 号 `+`/`-` 对应观察视角的左/右转；6 号 `+` 向前，`-` 未单独验证；7 号 `+` 下降、`-` 上升。三轴均无实体限位开关，也没有自动回零。6 号齿条当前剩余行程不能由脉冲上限推断；发现方向不符、接近端点或卡滞时，直接切断电机电源。`ARM_DONE` 只表示编码器达到固件当前判据，不证明机构位置或视觉目标已满足。
+
+## 固定单件试验
+
+`fixed_trial.json` 保存固定的台取、车后放/取、色环放/取和返回车后动作。所有机械臂位置都是“本次人工参考位＝0”下的有符号脉冲坐标。默认文件故意将方向、行程、姿态、速度和夹爪等待时间留为 `null`；未实测填写前只能预检，不会打开串口。底盘台架试验可保留空的 `chassis_segments`；实车段使用从本次 `PATH_RESET_ORIGIN` 起累计的绝对毫米目标。
+
+```bash
+python3 -B main.py --fixed-trial-check --profile fixed_trial.json
+python3 -B main.py --fixed-trial-run --profile fixed_trial.json --step --record
+python3 -B main.py --fixed-trial-run --profile fixed_trial.json --record
+```
+
+`run` 只执行一轮，启动前必须输入 `RUN` 确认三轴已回到可视标记；`--step` 模式还要在每步输入 `GO`。`--record` 在 `logs/fixed_trial/` 下生成 `profile_used.json`、`events.jsonl`、`summary.json` 和 `field_notes.md`。夹爪记录只写角度命令 ACK，不把 ACK 记为真实抓取成功。`config.json` 的 `rear.enabled=false`，本流程不会调用 YM-3220 转台舵机。
 
 ## 舵机手动调试
 
@@ -79,7 +92,7 @@ python3 -B main.py --servo rear 135
 python3 -B main.py --servo gripper 90
 ```
 
-首次调试应先卸下机构负载，从当前机械位置附近的小角度变化开始。命令角度最多一位小数。Pi 收到 ACK 后按配置等待一段时间，但 ACK 只表示 F4 已接受命令并更新 PWM；没有位置传感器，不能据此确认舵机或机构已到位。
+当前 `config.json` 将 `rear.enabled` 设为 `false`，因此第一条命令会被 Pi 拒绝；只有独立手动调试 YM-3220 时才应临时改为 `true`。首次调试应先卸下机构负载，从当前机械位置附近的小角度变化开始。命令角度最多一位小数。Pi 收到 ACK 后按配置等待一段时间，但 ACK 只表示 F4 已接受命令并更新 PWM；没有位置传感器，不能据此确认舵机或机构已到位。
 
 ## 协议、代码与验证
 

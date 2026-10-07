@@ -95,8 +95,13 @@ class ArmControlTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 encode_arm_jog(*args)
 
+    def test_move_supports_bounded_rotate_axis(self):
+        self.assertEqual(encode_arm_move(5, 1, 3200, 10, 200),
+                         b"\x05\x00\x80\x0c\x0a\x00\xc8")
+
     def test_move_bounds_reject_unintended_axis_and_speed(self):
-        for args in ((5, 1, 100, 5, 200), (6, 1, 1601, 30, 200),
+        for args in ((5, 1, 3201, 5, 200), (5, 1, 100, 11, 200),
+                     (6, 1, 1601, 30, 200),
                      (7, -1, 6401, 120, 200), (7, -1, 3200, 181, 200),
                      (6, 1, 1600, 30, 256)):
             with self.assertRaises(ValueError):

@@ -9,6 +9,8 @@ from pathlib import Path
 import time
 
 from .config import load_config
+from .fixed_trial import FixedTrialProfile, FixedTrialRunner
+from .trial_recorder import TrialRecorder
 from .calibration import FrameRectifier
 from .node_route import NineNodeRouteMap
 from .path_client import PathProtocolError
@@ -190,13 +192,13 @@ def main() -> int:
     parser.add_argument("--arm-jog", type=int, metavar="ID",
                         help="手动点动机械臂电机 5/6/7；每次最多 32 脉冲")
     parser.add_argument("--arm-move", type=int, metavar="ID",
-                        help="6/7 号一次相对位置运动；须显式指定方向和脉冲数")
+                        help="5/6/7 号一次相对位置运动；须显式指定方向和脉冲数")
     parser.add_argument("--arm-direction", choices=("+", "-"),
                         help="原始方向；7 号 + 为下降、- 为上升")
     parser.add_argument("--arm-pulses", type=int,
-                        help="点动默认 8；长行程 6 号 1..1600、7 号 1..6400")
+                        help="点动默认 8；ARM_MOVE 上限：5/6/7 号 3200/1600/6400")
     parser.add_argument("--arm-rpm", type=int,
-                        help="仅长行程使用；6 号默认 30 rpm，7 号默认 120 rpm")
+                        help="仅 ARM_MOVE 使用；5/6/7 号默认 5/30/120 rpm")
     parser.add_argument("--arm-acceleration", type=int,
                         help="仅长行程使用；Emm_V5 加速度档 0..255，默认 250")
     parser.add_argument("--arm-stop", type=int, metavar="ID",
@@ -205,6 +207,13 @@ def main() -> int:
                         help="查询指定机械臂电机的状态和编码器计数")
     parser.add_argument("--servo", nargs=2, metavar=("NAME", "ANGLE"),
                         help="设置单个舵机角度：rear 0..270 或 gripper 0..180")
+    parser.add_argument("--fixed-trial-check", action="store_true",
+                        help="预检固定单件流程，不连接机构")
+    parser.add_argument("--fixed-trial-run", action="store_true",
+                        help="从人工确认的参考位开始执行一轮固定流程")
+    parser.add_argument("--profile", type=Path, help="固定单件流程 JSON 配置")
+    parser.add_argument("--step", action="store_true", help="固定流程每步由操作员放行")
+    parser.add_argument("--record", action="store_true", help="记录固定流程的命令、反馈和摘要")
     parser.add_argument("--vision-debug", action="store_true", help="独立调试物料识别相机，不访问 STM32")
     parser.add_argument("--vision-camera-index", type=int,
                         help="仅本次运行覆盖 object_camera.index")
@@ -217,6 +226,64 @@ def main() -> int:
     arguments = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     config = load_config(arguments.config)
+
+    fixed_selected = arguments.fixed_trial_check or arguments.fixed_trial_run
+    if arguments.fixed_trial_check and arguments.fixed_trial_run:
+        parser.error("--fixed-trial-check 与 --fixed-trial-run 不能同用")
+    if fixed_selected:
+        if arguments.profile is None:
+            parser.error("固定流程必须提供 --profile")
+        if arguments.fixed_trial_check and (arguments.step or arguments.record):
+            parser.error("--step/--record 只能与 --fixed-trial-run 同用")
+        conflicting = any((arguments.dry_run, arguments.task, arguments.plan_path,
+                           arguments.execute_path, arguments.execute_node_route,
+                           arguments.path_status, arguments.path_stop,
+                           arguments.arm_jog, arguments.arm_move, arguments.arm_stop,
+                           arguments.arm_status, arguments.servo,
+                           arguments.vision_debug, arguments.vision_image))
+        if conflicting:
+            parser.error("固定流程不能与其他运行模式同用")
+        try:
+            profile = FixedTrialProfile.load(arguments.profile, config)
+        except (OSError, ValueError) as exc:
+            LOG.error("固定流程预检失败：%s", exc)
+            return 2
+        for line in profile.describe_steps():
+            LOG.info("%s", line)
+        if profile.issues:
+            for issue in profile.issues:
+                LOG.error("未就绪：%s", issue)
+            LOG.error("固定流程共有 %d 项未完成；禁止连接机构或运行",
+                      len(profile.issues))
+            return 2
+        if arguments.fixed_trial_check:
+            LOG.info("固定流程预检通过：%d 步；未连接串口或机构", len(profile.steps))
+            return 0
+        recorder = TrialRecorder(arguments.profile, profile.name) if arguments.record else None
+        try:
+            link = SerialPathLink(**config["serial"])
+        except Exception as exc:
+            LOG.error("固定流程串口连接失败：%s", exc)
+            if recorder is not None:
+                recorder.event("连接失败", error_type=type(exc).__name__, error=str(exc))
+                recorder.write_summary({"profile_name": profile.name, "success": False,
+                                        "completed_steps": 0, "completed_commands": 0,
+                                        "last_step": None,
+                                        "stop_reason": f"串口连接失败：{exc}",
+                                        "initial_encoders": {}, "final_encoders": {},
+                                        "stage_parking_positions": []})
+                recorder.close()
+                LOG.info("本次记录：%s", recorder.output_dir.resolve())
+            return 1
+        try:
+            return FixedTrialRunner(profile, link.path_client, recorder,
+                                    step_mode=arguments.step).run()
+        finally:
+            link.close()
+            if recorder is not None:
+                LOG.info("本次记录：%s", recorder.output_dir.resolve())
+    if arguments.profile is not None or arguments.step or arguments.record:
+        parser.error("--profile/--step/--record 必须与固定流程模式同用")
 
     arm_selected = any(motor_id is not None for motor_id in
                        (arguments.arm_jog, arguments.arm_move,
@@ -300,6 +367,8 @@ def main() -> int:
         if not math.isfinite(angle):
             parser.error("--servo ANGLE 必须是有限数字")
         servo_config = config["servos"][servo_name]
+        if not servo_config["enabled"]:
+            parser.error(f"舵机 {servo_name} 当前配置为 enabled=false")
         servo_angle_tenths = round(angle * 10)
         if abs(angle * 10 - servo_angle_tenths) > 1e-6:
             parser.error("--servo ANGLE 最多保留一位小数")
@@ -307,11 +376,11 @@ def main() -> int:
             parser.error(
                 f"{servo_name} 角度必须在 0..{servo_config['max_angle_deg']}°")
     if arguments.arm_move is not None:
-        if arguments.arm_move not in (6, 7):
-            parser.error("--arm-move 只支持 6、7 号电机")
+        if arguments.arm_move not in (5, 6, 7):
+            parser.error("--arm-move 只支持 5、6、7 号电机")
         if arguments.arm_direction is None or arguments.arm_pulses is None:
             parser.error("--arm-move 必须显式指定 --arm-direction 和 --arm-pulses")
-        move_rpm = arguments.arm_rpm if arguments.arm_rpm is not None else {6: 30, 7: 120}[arguments.arm_move]
+        move_rpm = arguments.arm_rpm if arguments.arm_rpm is not None else {5: 5, 6: 30, 7: 120}[arguments.arm_move]
         move_acceleration = (arguments.arm_acceleration if arguments.arm_acceleration is not None
                              else 250)
         try:

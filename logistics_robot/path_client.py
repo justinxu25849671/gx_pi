@@ -57,6 +57,7 @@ class PathClient:
         self._arm_terminal = threading.Event()
         self.last_arm_event: ArmDoneEvent | None = None
         self._active_arm_sequence: int | None = None
+        self.last_path_start_sequence: int | None = None
         self._sequence = 0
         self._listeners: list[Callable[[PathEvent], None]] = []
         self._terminal = threading.Event()
@@ -197,7 +198,7 @@ class PathClient:
         self._active_arm_sequence = event.request_sequence
 
     def arm_move(self, motor_id: int, direction: int, pulses: int,
-                 rpm: int, acceleration: int) -> None:
+                 rpm: int, acceleration: int) -> AckEvent:
         payload = encode_arm_move(motor_id, direction, pulses, rpm, acceleration)
         with self._lock:
             self._arm_terminal.clear()
@@ -208,6 +209,7 @@ class PathClient:
         if event.path_id != motor_id:
             raise PathProtocolError("机械臂 ACK 电机编号不匹配")
         self._active_arm_sequence = event.request_sequence
+        return event
 
     def arm_stop(self, motor_id: int) -> None:
         if motor_id not in (5, 6, 7):
@@ -284,6 +286,7 @@ class PathClient:
                     raise PathProtocolError("已有路径正在运行，不能并发启动")
                 self._last_terminal_event = None
                 self._terminal.clear()
+                self.last_path_start_sequence = None
             start_sent = False
             try:
                 self.request(PathCommand.CLEAR)
@@ -291,7 +294,9 @@ class PathClient:
                     self.request(PathCommand.RESET_ORIGIN)
                 self.request(PathCommand.UPLOAD, upload_payload)
                 start_sent = True
-                self.request(PathCommand.START, bytes((path_id,)))
+                start_ack = self.request(PathCommand.START, bytes((path_id,)))
+                assert isinstance(start_ack, AckEvent)
+                self.last_path_start_sequence = start_ack.request_sequence
             except PathRequestTimeout as timeout:
                 # ACK 丢失不等于命令未执行；只查询真实状态，绝不盲目重发命令。
                 try:
