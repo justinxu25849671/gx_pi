@@ -70,6 +70,7 @@
     }
   },
   "node_route": {
+    "initial_exit_mm": {"forward": 100, "left": 80},
     "node_coordinates": {
       "1": [0, 0], "2": [1, 0], "3": [2, 0],
       "4": [0, 1], "5": [1, 1], "6": [2, 1],
@@ -81,13 +82,13 @@
       "7": [80, 1990], "8": [1050, 1990], "9": [1970, 1990]
     },
     "edges": [
-      {"from": 1, "to": 2, "distance_mm": 950}, {"from": 2, "to": 3, "distance_mm": 950},
+      {"from": 1, "to": 2, "distance_mm": 950}, {"from": 2, "to": 3, "distance_mm": 900},
       {"from": 1, "to": 4, "distance_mm": 1100},
-      {"from": 4, "to": 5, "distance_mm": 900}, {"from": 5, "to": 6, "distance_mm": 950},
-      {"from": 2, "to": 5, "distance_mm": 1101.1}, {"from": 3, "to": 6, "distance_mm": 1101.1},
-      {"from": 4, "to": 7, "distance_mm": 851.5}, {"from": 5, "to": 8, "distance_mm": 850},
+      {"from": 4, "to": 5, "distance_mm": 950}, {"from": 5, "to": 6, "distance_mm": 950},
+      {"from": 2, "to": 5, "distance_mm": 1101.1}, {"from": 3, "to": 6, "distance_mm": 950},
+      {"from": 4, "to": 7, "distance_mm": 900}, {"from": 5, "to": 8, "distance_mm": 850},
       {"from": 6, "to": 9, "distance_mm": 855.9},
-      {"from": 7, "to": 8, "distance_mm": 850}, {"from": 8, "to": 9, "distance_mm": 850}
+      {"from": 7, "to": 8, "distance_mm": 900}, {"from": 8, "to": 9, "distance_mm": 950}
     ],
     "zone_nodes": {"qr": 4, "raw": 2, "coarse": 8, "temporary": 6, "home": 1}
   },

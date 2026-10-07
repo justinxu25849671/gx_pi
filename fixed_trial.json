@@ -24,22 +24,42 @@
       "acceleration": null
     },
     "6": {
-      "positive_motion": null,
-      "negative_motion": null,
-      "min_position_pulses": null,
-      "max_position_pulses": null,
-      "max_single_move_pulses": null,
-      "rpm": null,
-      "acceleration": null
+      "positive_motion": "从后端向前伸出（实测）",
+      "negative_motion": "从前端向后缩回（实测）",
+      "min_position_pulses": 0,
+      "max_position_pulses": 2080,
+      "max_single_move_pulses": 160,
+      "rpm": 10,
+      "acceleration": 100,
+      "calibration": {
+        "reference_mark": "后机械限位向 + 方向离开 160 脉冲（约 8 mm）处；每次运行人工对准后建立逻辑零点",
+        "measured_step_pulses": 160,
+        "measured_step_mm_approx": 8,
+        "pulses_per_mm_approx": 20,
+        "safe_travel_mm_approx": 104,
+        "evidence": "全行程 + 方向 14 次、- 方向 14 次各 160 脉冲成功；随后第 15 次 - 方向触及后限位并 MOTION_TIMEOUT",
+        "warning": "机械硬限位不是运行零点；断电、人工推动、碰撞或超时后必须重新对准参考标记"
+      }
     },
     "7": {
-      "positive_motion": null,
-      "negative_motion": null,
-      "min_position_pulses": null,
-      "max_position_pulses": null,
-      "max_single_move_pulses": null,
-      "rpm": null,
-      "acceleration": null
+      "positive_motion": "从上方向下下降（实测）",
+      "negative_motion": "从下方向上抬升（实测）",
+      "min_position_pulses": 0,
+      "max_position_pulses": 158560,
+      "max_single_move_pulses": 6000,
+      "rpm": 100,
+      "acceleration": 100,
+      "calibration": {
+        "reference_mark": "从顶部位置向 + 方向下降 6000 脉冲处；每次运行人工对准后建立逻辑零点",
+        "measured_full_travel_pulses": 170560,
+        "safe_margin_each_end_pulses": 6000,
+        "safe_travel_pulses": 158560,
+        "initial_encoder_count": 7,
+        "final_encoder_count": 3473904,
+        "encoder_counts_per_command_pulse_approx": 20.367,
+        "evidence": "从最低位置向 - 方向依次运行 320、640、1600 及 28 次 6000 脉冲，31 条命令均 ARM_DONE/OK 后到达顶部",
+        "warning": "顶部和底部机械端点均不是运行零点；断电、人工推动、碰撞或超时后必须重新对准参考标记"
+      }
     }
   },
   "poses": {

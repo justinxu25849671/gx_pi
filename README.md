@@ -18,26 +18,26 @@ pip install -r requirements.txt
 ## 九点路网与坐标
 
 ```text
-1 ──950── 2 ──950── 3
-│1100     │1101.1   │1101.1
-4 ──900── 5 ──950── 6
-│851.5    │850      │855.9
-7 ──850── 8 ──850── 9
+1 ──950── 2 ──900── 3
+│1100     │1101.1   │950
+4 ──950── 5 ──950── 6
+│900      │850      │855.9
+7 ──900── 8 ──950── 9
 ```
 
 图中数字为当前配置的逐边行驶距离，单位毫米。九点地图坐标另见 `config.json` 的 `node_route.node_mm_coordinates`：1 启停区 `(0,0)`，2 原料区 `(1050,80)`，3 `(1970,80)`，4 二维码板 `(80,1080)`，5 中心点 `(1050,1080)`，6 暂存区 `(1970,1080)`，7 `(80,1990)`，8 粗加工区 `(1050,1990)`，9 `(1970,1990)`。沿用当前车体方向：`1→2` 为 X 正方向（前进），`1→4` 为 Y 正方向（左移）。F4 的坐标以本次 `PATH_RESET_ORIGIN` 位置为原点；每个路径目标是相对该原点的绝对毫米坐标。
 
-`config.json` 的 `node_route.edges[].distance_mm` 保存各边实测长度。`node_coordinates` 只表示逻辑邻接；`node_mm_coordinates` 目前用于判断边的 X/Y 正负方向，不直接作为逐段位移。执行时按经过的边长累计目标，同向连续边合成一段；未填长度的边不参与最短路，手动路线若包含未测量边也禁止下发。各边测量值不完全满足环路闭合，绕环执行后的累计坐标可能产生偏差，需现场复测。
+`config.json` 的 `node_route.edges[].distance_mm` 保存各边行驶长度。图中 1→2→3→6→5→4→7→8→9 的八条边已按最新提供的毫米值更新，其他边保留原配置，使用前应核对。`node_coordinates` 只表示逻辑邻接；`node_mm_coordinates` 目前用于判断边的 X/Y 正负方向，不直接作为逐段位移。执行时按经过的边长累计目标，同向连续边合成一段；未填长度的边不参与最短路，手动路线若包含未测量边也禁止下发。各边测量值不完全满足环路闭合，绕环执行后的累计坐标可能产生偏差，需现场复测。
 
 ```bash
-python3 -B main.py --plan-path 1-2-3-6-9
+python3 -B main.py --plan-path 1-2-3-6-5-4-7-8-9
 python3 -B main.py --path-status
 python3 -B main.py --execute-path '0,500' --path-id 1
-python3 -B main.py --execute-node-route 1-2-3-6-9 --path-id 1 --path-rpm 40
+python3 -B main.py --execute-node-route 1-2-3-6-5-4-7-8-9 --path-id 1 --path-rpm 40
 python3 -B main.py --path-stop
 ```
 
-`--plan-path` 只检查输入的节点序列，不访问硬件。`--execute-path` 仅接受一个绝对毫米目标，用于单段联调；`--execute-node-route` 先校验整条路线，再逐段发送。首段重置 F4 局部原点，后续段保留同一原点；每段必须收到匹配的 `DONE` 才推进。`ERROR`、请求失败、串口失联或终止帧缺失时停止推进。`--keep-path-origin` 只用于明确需要沿用既有原点的单段联调。
+`--plan-path` 只检查输入的节点序列，不访问硬件。`--execute-path` 仅接受一个绝对毫米目标，用于单段联调；`--execute-node-route` 先校验整条路线，再逐段发送。从节点 1 出发时，先按 `node_route.initial_exit_mm` 执行前进 100 mm、左移 80 mm 两段；两段各自收到匹配 `DONE` 后，才从偏移后的位置继续节点路径。从其他节点出发不执行该初始位动作。第一段运动重置 F4 局部原点，后续段保留同一原点；每段必须收到匹配的 `DONE` 才推进。`ERROR`、请求失败、串口失联或终止帧缺失时停止推进。`--keep-path-origin` 只用于明确需要沿用既有原点的单段联调。
 
 路径控制顺序为 `PATH_CLEAR → PATH_RESET_ORIGIN（首段）→ PATH_UPLOAD → PATH_START → DONE/ERROR`。Pi 运行中周期性查询状态；查询只是确认链路和状态，不代替到位事件。F4 执行一段时，即使连续收不到有效 Pi 帧，也会继续到完成或运动超时。`PATH_STOP` 在四轮编码器连续约 200 ms 静止后才回 ACK；1 秒内无法确认则回 NACK。`PATH_CLEAR` 在运动中回 BUSY，应先停止。
 

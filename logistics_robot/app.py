@@ -473,10 +473,14 @@ def main() -> int:
             LOG.info("单段完成：估算坐标 (%d,%d)", terminal.estimated_x_mm,
                      terminal.estimated_y_mm)
         else:
-            route_map = NineNodeRouteMap.from_config(config.get("node_route"))
+            route_config = config.get("node_route") or {}
+            route_map = NineNodeRouteMap.from_config(route_config)
             plan = route_map.plan(route_map.parse_path(arguments.execute_node_route))
+            initial_exit = route_config.get("initial_exit_mm", {})
             executor = RouteExecutor(link.path_client, route_map, arguments.path_rpm,
-                                     arguments.path_acceleration)
+                                     arguments.path_acceleration,
+                                     initial_exit_mm=(initial_exit.get("forward", 0),
+                                                      initial_exit.get("left", 0)))
             completions = executor.execute(plan, arguments.path_id)
             LOG.info("节点路线完成：%d 段；最终节点 %d", len(completions), plan.nodes[-1])
     except KeyboardInterrupt:

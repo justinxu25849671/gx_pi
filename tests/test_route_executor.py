@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import unittest
+import json
+from pathlib import Path
 
 from logistics_robot.node_route import NineNodeRouteMap, RouteEdge
 from logistics_robot.path_protocol import DoneEvent, ErrorEvent, PathPoint, PathResult, PathSegment
@@ -104,6 +106,39 @@ class RouteExecutorTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "MOTION_TIMEOUT"):
             RouteExecutor(client, route_map, 40, 10).execute(route_map.plan((1, 2, 5)), 11)
         self.assertEqual([item[0] for item in client.started], [11])
+
+    def test_initial_exit_finishes_before_node_route_and_offsets_targets(self):
+        route_map = self._map()
+        client = FakeClient()
+        result = RouteExecutor(client, route_map, 40, 10,
+                               initial_exit_mm=(100, 80)).execute(route_map.plan((1, 2)), 254)
+        self.assertEqual([(path_id, points[0], reset) for path_id, points, reset in client.started],
+                         [(254, PathPoint(100, 0, 40, 10), True),
+                          (255, PathPoint(100, 80, 40, 10), False),
+                          (1, PathPoint(600, 80, 40, 10), False)])
+        self.assertEqual([item.path_id for item in result], [1])
+
+    def test_initial_exit_error_prevents_route_motion(self):
+        route_map = self._map()
+        client = FakeClient(fail_on=2)
+        with self.assertRaisesRegex(RuntimeError, "驶出初始位失败"):
+            RouteExecutor(client, route_map, 40, 10,
+                          initial_exit_mm=(100, 80)).execute(route_map.plan((1, 2)), 1)
+        self.assertEqual([item[0] for item in client.started], [1, 2])
+
+    def test_initial_exit_only_applies_at_node_one(self):
+        route_map = self._map()
+        client = FakeClient()
+        RouteExecutor(client, route_map, 40, 10,
+                      initial_exit_mm=(100, 80)).execute(route_map.plan((2, 3)))
+        self.assertEqual(client.started, [(1, (PathPoint(500, 0, 40, 10),), True)])
+
+    def test_current_measured_route_lengths(self):
+        config_path = Path(__file__).resolve().parents[1] / "config.json"
+        route_map = NineNodeRouteMap.from_config(json.loads(config_path.read_text())["node_route"])
+        plan = route_map.plan((1, 2, 3, 6, 5, 4, 7, 8, 9))
+        self.assertEqual([segment.distance_mm for segment in plan.segments],
+                         [1850, 950, 1900, 900, 1850])
 
 
 if __name__ == "__main__":
