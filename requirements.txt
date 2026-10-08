@@ -2,3 +2,5 @@ pyserial>=3.5
 numpy>=1.24
 opencv-python>=4.8
 gpiozero>=2.0
+spidev>=3.6
+Pillow>=9.1

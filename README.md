@@ -13,6 +13,36 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
+## GMT028-09 SPI 屏独立点亮
+
+模块图纸标明 ST7789、240×320，9 针排针在本次原理图中配置为 4 线 SPI。下面用树莓派 SPI0 CE0 测试固定文字 `123+123+123`，不启动任务、串口或电机。先断电接线；BCM 号与树莓派排针物理脚号不要混淆。
+
+| 屏幕排针 | 模块信号 | 树莓派接线 |
+| --- | --- | --- |
+| 1 | GND | GND，物理脚 6 |
+| 2 | VCC | 5V，物理脚 2；仅限原理图所示带 3.3V 稳压的模块板 |
+| 3 | SCL | SPI0 SCLK，BCM11，物理脚 23 |
+| 4 | SDA | SPI0 MOSI，BCM10，物理脚 19 |
+| 5 | RST | BCM24，物理脚 18 |
+| 6 | DC | BCM25，物理脚 22 |
+| 7 | CS | SPI0 CE0，BCM8，物理脚 24 |
+| 8 | BL | BCM23，物理脚 16 |
+| 9 | SDA-0 | 暂不接，读回数据暂不用 |
+
+Pi 的 GPIO 信号均为 3.3V，不能给这些信号脚输入 5V。若实物排针、丝印或模块版本与图纸不一致，先核对再上电。当前项目 `config.json` 的 BCM17 已用于其他功能，本示例未占用它。
+
+在树莓派启用 SPI（`sudo raspi-config` → Interface Options → SPI → Enable），重启后确认 `/dev/spidev0.0` 存在。先在本机或 Pi 上预览将发送的画面，再于 Pi 的部署目录中点亮；硬件模式保持运行，`Ctrl-C` 关闭背光。程序不需要桌面/VNC。
+
+```bash
+python3 -B show_gmt028.py --preview /tmp/gmt028-preview.png
+cd /home/pi/文档/pi
+source .venv/bin/activate
+ls /dev/spidev0.0
+python3 -B show_gmt028.py
+```
+
+代码使用 `Pillow`、`gpiozero` 和 `spidev`。本地生成预览只检查排版和像素数据；真实点亮需部署到 Pi 后检查接线、供电和屏幕画面。当前 `logistics_robot/display.py` 仍是桌面 OpenCV 窗口，后续若要显示实时任务码，可把此驱动接入任务状态更新。
+
 仓库已有 `config.json`；按现场设备修改 `serial.port`、`object_camera.index` 和 `qr_camera.index`。`config.example.json` 用作配置参考。视觉调试需要 OpenCV 窗口时，请使用树莓派桌面、VNC 或显示器。
 
 ## 九点路网与坐标
