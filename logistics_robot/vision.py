@@ -6,6 +6,7 @@ from collections import Counter
 from collections.abc import Mapping
 from dataclasses import replace
 import math
+import sys
 from typing import Any
 
 from .model import DetectedObject
@@ -66,7 +67,7 @@ class ObjectDetector:
         if extra or missing:
             raise ValueError("物料 HSV 只能且必须配置 red/yellow/blue/green 四种颜色")
         self._hsv_colors = hsv_colors
-        self._tracks: dict[str, tuple[float, float, int]] = {}
+        self._tracks: list[dict[str, Any]] = []
 
     def _valid_mask(self, shape):
         import numpy as np
@@ -98,47 +99,88 @@ class ObjectDetector:
         offset = raw.get("offset_px", [0.0, 0.0])
         return float(point[0]) + float(offset[0]), float(point[1]) + float(offset[1])
 
+    @staticmethod
+    def _size_ratio(new: float, old: float) -> float:
+        small = min(new, old)
+        if small <= 0:
+            return float("inf")
+        return max(new, old) / small
+
+    def _match_tracks(self, objects: list[DetectedObject], tolerance: float) -> dict[int, int]:
+        pairs = []
+        for detection_index, item in enumerate(objects):
+            point = item.reference_point_px
+            for track_index, track in enumerate(self._tracks):
+                if track["color"] != item.color:
+                    continue
+                distance = math.hypot(point[0] - track["x"], point[1] - track["y"])
+                if distance <= tolerance:
+                    pairs.append((distance, detection_index, track_index))
+        pairs.sort()
+        used_detections: set[int] = set()
+        used_tracks: set[int] = set()
+        matches: dict[int, int] = {}
+        for _distance, detection_index, track_index in pairs:
+            if detection_index in used_detections or track_index in used_tracks:
+                continue
+            used_detections.add(detection_index)
+            used_tracks.add(track_index)
+            matches[detection_index] = track_index
+        return matches
+
     def _stabilize(self, objects: list[DetectedObject], shape) -> list[DetectedObject]:
-        height, width = shape[:2]
-        reference = self._config.get("selection_reference_px", [width / 2.0, height / 2.0])
-        reference = (float(reference[0]), float(reference[1]))
+        """连续出现才输出。面积突然变大或变小的那一帧不输出。"""
+        del shape
         tolerance = float(self._config.get("stable_center_tolerance_px", 8.0))
         required = int(self._config.get("stable_frames", 4))
-        output = list(objects)
-        visible_colors: set[str] = set()
-        for color in MATERIAL_COLORS:
-            indexed = [(index, item) for index, item in enumerate(output) if item.color == color]
-            if not indexed:
-                continue
-            visible_colors.add(color)
-            previous = self._tracks.get(color)
-            if previous:
-                selected = min(indexed, key=lambda pair: (
-                    math.hypot(pair[1].reference_point_px[0] - previous[0],
-                               pair[1].reference_point_px[1] - previous[1]),
-                    math.hypot(pair[1].reference_point_px[0] - reference[0],
-                               pair[1].reference_point_px[1] - reference[1]),
-                    -pair[1].area_px,
-                ))
-            else:
-                selected = min(indexed, key=lambda pair: (
-                    math.hypot(pair[1].reference_point_px[0] - reference[0],
-                               pair[1].reference_point_px[1] - reference[1]),
-                    -pair[1].area_px,
-                ))
-            index, item = selected
+        max_ratio = float(self._config.get("max_area_change_ratio", 1.6))
+        matches = self._match_tracks(objects, tolerance)
+        next_tracks: list[dict[str, Any]] = []
+        emitted: list[DetectedObject] = []
+        for detection_index, item in enumerate(objects):
             point = item.reference_point_px
-            count = 1
-            if previous and math.hypot(point[0] - previous[0], point[1] - previous[1]) <= tolerance:
-                count = previous[2] + 1
-            self._tracks[color] = (point[0], point[1], count)
+            track = None if detection_index not in matches else dict(self._tracks[matches[detection_index]])
+            if track is None:
+                track = {
+                    "color": item.color, "x": point[0], "y": point[1],
+                    "area": item.area_px, "count": 1,
+                    "pending_area": None, "pending_count": 0,
+                }
+                next_tracks.append(track)
+                if required <= 1:
+                    confidence = min(1.0, 0.45 * item.solidity + 0.25 * item.extent + 0.30)
+                    emitted.append(replace(item, stable=True, stable_frames=1, confidence=confidence))
+                continue
+            track["x"], track["y"] = point[0], point[1]
+            if self._size_ratio(item.area_px, track["area"]) > max_ratio:
+                pending = track["pending_area"]
+                if pending is not None and self._size_ratio(item.area_px, pending) <= max_ratio:
+                    track["pending_count"] += 1
+                    track["pending_area"] = item.area_px
+                else:
+                    track["pending_area"] = item.area_px
+                    track["pending_count"] = 1
+                if track["pending_count"] < required:
+                    next_tracks.append(track)
+                    continue
+                track["area"] = item.area_px
+                track["count"] = track["pending_count"]
+                track["pending_area"] = None
+                track["pending_count"] = 0
+            else:
+                track["area"] = item.area_px
+                track["count"] += 1
+                track["pending_area"] = None
+                track["pending_count"] = 0
+            next_tracks.append(track)
+            if track["count"] < required:
+                continue
             confidence = min(1.0, 0.45 * item.solidity + 0.25 * item.extent +
-                             0.30 * min(1.0, count / max(required, 1)))
-            output[index] = replace(item, stable=count >= required,
-                                    stable_frames=count, confidence=confidence)
-        self._tracks = {color: track for color, track in self._tracks.items()
-                        if color in visible_colors}
-        return output
+                             0.30 * min(1.0, track["count"] / max(required, 1)))
+            emitted.append(replace(item, stable=True, stable_frames=track["count"],
+                                   confidence=confidence))
+        self._tracks = next_tracks
+        return emitted
 
     def detect(self, frame) -> list[DetectedObject]:
         cv2 = self.cv2
@@ -182,6 +224,13 @@ class ObjectDetector:
                     continue
                 if solidity < min_solidity or extent < min_extent:
                     continue
+                min_circularity = float(self._config.get("min_circularity", 0.0))
+                if min_circularity > 0:
+                    perimeter = cv2.arcLength(contour, True)
+                    circularity = (4.0 * math.pi * area / (perimeter * perimeter)
+                                   if perimeter > 0 else 0.0)
+                    if circularity < min_circularity:
+                        continue
                 moments = cv2.moments(contour)
                 if moments["m00"] == 0:
                     continue
@@ -281,6 +330,15 @@ def draw_object_debug_frame(frame, objects: list[DetectedObject], fps: float,
     return annotated
 
 
+def _camera_backend(cv2):
+    """Windows 用 DirectShow。树莓派继续用 V4L2。"""
+    if sys.platform == "win32" and hasattr(cv2, "CAP_DSHOW"):
+        return cv2.CAP_DSHOW
+    if sys.platform.startswith("linux") and hasattr(cv2, "CAP_V4L2"):
+        return cv2.CAP_V4L2
+    return cv2.CAP_ANY
+
+
 class CameraVision:
     """物料相机采帧封装；二维码相机应创建独立实例。"""
 
@@ -290,8 +348,7 @@ class CameraVision:
         except ImportError as exc:
             raise RuntimeError("未安装 OpenCV，请先执行 pip install -r requirements.txt") from exc
         self.cv2 = cv2
-        backend = cv2.CAP_V4L2 if hasattr(cv2, "CAP_V4L2") else cv2.CAP_ANY
-        self._capture = cv2.VideoCapture(int(camera_config["index"]), backend)
+        self._capture = cv2.VideoCapture(int(camera_config["index"]), _camera_backend(cv2))
         self._capture.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
         self._capture.set(cv2.CAP_PROP_FRAME_WIDTH, int(camera_config["width"]))
         self._capture.set(cv2.CAP_PROP_FRAME_HEIGHT, int(camera_config["height"]))

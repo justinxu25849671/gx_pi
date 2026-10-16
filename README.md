@@ -89,7 +89,13 @@ python3 -B main.py --vision-image /path/to/photo.jpg --vision-mode combined
 python3 -B main.py --vision-web --vision-mode combined
 ```
 
-默认监听 `0.0.0.0:8080`。在树莓派本机打开 `http://127.0.0.1:8080/`，同一局域网的电脑用树莓派 IP 加端口访问。页面左侧是标注后的实时画面，右侧列出圆环圆心和物料圆心在画面中心坐标系中的坐标。`--vision-web-host` 和 `--vision-web-port` 可改监听地址和端口。
+默认监听 `0.0.0.0:8080`。在树莓派本机打开 `http://127.0.0.1:8080/`，同一局域网的电脑用树莓派 IP 加端口访问。页面左侧是标注后的实时画面，右侧列出圆环圆心和物料圆心在画面中心坐标系中的坐标。`--vision-web-host` 和 `--vision-web-port` 可改监听地址和端口。网页不发送坐标。
+
+打开视觉定位时指定要识别的颜色。程序只保留该颜色的圆环，把唯一稳定圆环的圆心发给下位机；颜色用 `red`/`yellow`/`blue`/`green` 或 `1`/`2`/`3`/`4`：
+
+```bash
+python3 -B main.py --vision-locate red
+```
 
 视觉标定从 `object_camera.object_detection.roi`、遮挡区域、HSV 和参考点开始。黑白环单独用灰度/圆弧特征检测；现场确定三个环心后填写 `ring_detection.position_centers_px`，验证空环、遮挡和偏心图，再设置 `ring_detection.calibrated=true`。黄色 HSV 仍需现场标定。
 

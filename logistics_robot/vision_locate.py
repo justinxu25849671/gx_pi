@@ -1,0 +1,117 @@
+"""按指定颜色识别圆环，并把圆心发给下位机。"""
+
+from __future__ import annotations
+
+import logging
+from typing import Any
+
+from .calibration import FrameRectifier
+from .ring_detection import RingCandidate, RingDetector, draw_ring_debug
+from .vision import MATERIAL_COLORS, CameraVision, image_origin_px
+
+
+LOG = logging.getLogger(__name__)
+
+_COLOR_ALIASES = {
+    "red": "red", "1": "red", "红": "red",
+    "yellow": "yellow", "2": "yellow", "黄": "yellow",
+    "blue": "blue", "3": "blue", "蓝": "blue",
+    "green": "green", "4": "green", "绿": "green",
+}
+
+
+def parse_locate_color(text: str) -> str:
+    """解析打开视觉定位时要识别的颜色。"""
+    color = _COLOR_ALIASES.get(str(text).strip().lower())
+    if color not in MATERIAL_COLORS:
+        raise ValueError("视觉定位颜色只能是 red/yellow/blue/green，或 1/2/3/4")
+    return color
+
+
+def retain_hsv_color(frame, color: str, hsv_colors: dict[str, Any], cv2):
+    """只保留指定颜色的像素，其余清成黑色。"""
+    if color not in hsv_colors:
+        raise ValueError(f"未配置 {color} 的 HSV")
+    hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+    mask = None
+    for bounds in hsv_colors[color]:
+        h1, s1, v1, h2, s2, v2 = (int(value) for value in bounds)
+        partial = cv2.inRange(hsv, (h1, s1, v1), (h2, s2, v2))
+        mask = partial if mask is None else cv2.bitwise_or(mask, partial)
+    if mask is None:
+        raise ValueError(f"{color} 的 HSV 范围为空")
+    return cv2.bitwise_and(frame, frame, mask=mask)
+
+
+def locate_coordinate(rings: list[RingCandidate], width: int,
+                      height: int) -> tuple[int, int] | None:
+    """唯一稳定圆环才返回画面中心坐标。没有或不止一个时不发。"""
+    stable = [item for item in rings if item.stable]
+    if len(stable) != 1:
+        return None
+    item = stable[0]
+    return image_origin_px(item.center_x_px, item.center_y_px, width, height)
+
+
+def run_color_ring_locate(config: dict[str, Any], color: str,
+                          camera_index: int | None, client) -> int:
+    """打开视觉定位，只识别 ``color`` 圆环并发送其圆心。"""
+    camera_config = dict(config["object_camera"])
+    if camera_index is not None:
+        camera_config["index"] = camera_index
+    try:
+        vision = CameraVision(camera_config, config["hsv_colors"])
+    except RuntimeError as exc:
+        LOG.error("无法打开物料识别相机：%s", exc)
+        return 1
+    detector = RingDetector(config["ring_detection"], vision.cv2)
+    rectifier = FrameRectifier(config["vision_calibration"].get("camera", {}), vision.cv2)
+    started = False
+    window = True
+    try:
+        client.start_visual_positioning()
+        started = True
+        LOG.info("视觉定位已打开，只识别 %s 圆环", color)
+        while True:
+            frame = rectifier.apply(vision.read())
+            masked = retain_hsv_color(frame, color, config["hsv_colors"], vision.cv2)
+            rings = detector.detect(masked)
+            height, width = frame.shape[:2]
+            point = locate_coordinate(rings, width, height)
+            if point is None:
+                LOG.info("未锁定唯一的 %s 圆环，暂不发送坐标", color)
+            elif point == (0, 0):
+                LOG.info("%s 圆环圆心已在画面原点，结束视觉定位", color)
+                client.stop_visual_positioning()
+                started = False
+                return 0
+            else:
+                client.send_visual_coordinate(point[0], point[1])
+                LOG.info("发送 %s 圆环圆心 (%d, %d)", color, point[0], point[1])
+            if window:
+                try:
+                    annotated = draw_ring_debug(frame, rings)
+                    vision.cv2.imshow(f"Locate {color} ring", annotated)
+                    key = vision.cv2.waitKey(1) & 0xFF
+                except vision.cv2.error:
+                    window = False
+                    key = 255
+                if key in (ord("q"), 27):
+                    LOG.info("操作员退出视觉定位")
+                    return 0
+    except KeyboardInterrupt:
+        LOG.info("操作员退出视觉定位")
+        return 0
+    finally:
+        if started:
+            try:
+                client.stop_visual_positioning()
+            except Exception as exc:
+                LOG.error("停止视觉定位失败：%s", exc)
+        vision.close()
+        if window:
+            try:
+                vision.cv2.destroyAllWindows()
+            except vision.cv2.error:
+                pass
+    return 0

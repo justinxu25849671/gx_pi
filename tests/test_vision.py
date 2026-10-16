@@ -98,11 +98,58 @@ class VisionTests(unittest.TestCase):
         cv2.rectangle(frame, (82, 42), (112, 72), (0, 0, 255), -1)
         for index in range(3):
             objects = detector.detect(frame)
-            self.assertEqual(len(objects), 1)
-            self.assertEqual(objects[0].stable, index == 2)
+            self.assertEqual(len(objects), 1 if index == 2 else 0)
+        self.assertTrue(objects[0].stable)
         self.assertAlmostEqual(objects[0].reference_point_px[0], 99.5, delta=1.0)
         self.assertAlmostEqual(objects[0].circle_center_px[0], objects[0].center_x_px, delta=8)
         self.assertAlmostEqual(objects[0].circle_center_px[1], objects[0].center_y_px, delta=8)
+
+    @unittest.skipIf(np is None, "未安装 numpy/OpenCV，无法运行图像检测测试")
+    def test_circularity_keeps_disc_and_rejects_bar(self):
+        import cv2
+        config = {
+            "object_detection": {
+                "min_area_px": 200, "max_area_px": 20000,
+                "min_aspect_ratio": 0.2, "max_aspect_ratio": 5.0,
+                "min_solidity": 0.5, "min_extent": 0.3,
+                "min_circularity": 0.80,
+                "stable_frames": 1,
+            }
+        }
+        hsv = {color: [[0, 0, 0, 180, 255, 255]]
+               for color in ("red", "yellow", "blue", "green")}
+        hsv["red"] = [[0, 80, 80, 10, 255, 255]]
+        detector = ObjectDetector(config, hsv, cv2)
+        frame = np.zeros((160, 200, 3), dtype=np.uint8)
+        cv2.circle(frame, (60, 80), 24, (0, 0, 255), -1)
+        cv2.rectangle(frame, (120, 70), (190, 90), (0, 0, 255), -1)
+        objects = detector.detect(frame)
+        self.assertEqual(len(objects), 1)
+        self.assertLess(abs(objects[0].center_x_px - 60), 8)
+
+    def test_brief_hit_and_area_jump_are_hidden(self):
+        import cv2
+        config = {"object_detection": {
+            "stable_frames": 3, "stable_center_tolerance_px": 8,
+            "max_area_change_ratio": 1.5,
+        }}
+        hsv = {color: [[0, 0, 0, 1, 1, 1]]
+               for color in ("red", "yellow", "blue", "green")}
+        detector = ObjectDetector(config, hsv, cv2)
+
+        def seen(area):
+            return detector._stabilize(
+                [DetectedObject("red", 50, 50, area, reference_x_px=50, reference_y_px=50,
+                                solidity=1.0, extent=1.0)],
+                (100, 100))
+
+        self.assertEqual(seen(1000), [])
+        self.assertEqual(seen(1000), [])
+        self.assertEqual(len(seen(1000)), 1)
+        self.assertEqual(seen(4000), [])
+        kept = seen(1000)
+        self.assertEqual(len(kept), 1)
+        self.assertAlmostEqual(kept[0].area_px, 1000)
 
 
 if __name__ == "__main__":

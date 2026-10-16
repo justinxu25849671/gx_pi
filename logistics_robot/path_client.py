@@ -235,7 +235,7 @@ class PathClient:
         return event
 
     def send_visual_coordinate(self, x_px: int, y_px: int) -> None:
-        """下发画面中心坐标系中的物料圆心。此帧不等待回复。"""
+        """下发画面中心坐标系中的指定颜色圆环圆心。此帧不等待回复。"""
         payload = encode_vision_coordinate(x_px, y_px)
         if not self.connection_available:
             raise ConnectionError("STM32 串口当前不可用")

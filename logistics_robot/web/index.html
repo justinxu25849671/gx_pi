@@ -74,6 +74,21 @@
     .ok { color: var(--ok); }
     .warn { color: var(--warn); }
     .empty { color: var(--muted); padding-top: 8px; font-size: 13px; }
+    .colors { display: flex; flex-wrap: wrap; gap: 8px; }
+    .colors button {
+      border: 1px solid var(--line);
+      background: #fff;
+      color: var(--text);
+      border-radius: 999px;
+      padding: 6px 12px;
+      cursor: pointer;
+      font: inherit;
+    }
+    .colors button.active {
+      background: var(--accent);
+      border-color: var(--accent);
+      color: #fff;
+    }
     @media (max-width: 860px) {
       main { grid-template-columns: 1fr; }
     }
@@ -83,7 +98,7 @@
   <header>
     <div>
       <h1>处理后的相机画面</h1>
-      <p>画面中心为 (0, 0)，x 向右为正，y 向下为正。此页面只显示识别结果，不发送底盘或机构命令。</p>
+      <p>画面中心为 (0, 0)，x 向右为正，y 向下为正。选择颜色后只识别该颜色圆环。此页面不发送底盘或机构命令。</p>
     </div>
   </header>
   <main>
@@ -92,6 +107,14 @@
     </section>
     <aside class="panel">
       <div class="meta" id="meta">等待画面…</div>
+      <h2>识别颜色</h2>
+      <div class="colors" id="colors">
+        <button type="button" data-color="">全部</button>
+        <button type="button" data-color="red">红</button>
+        <button type="button" data-color="yellow">黄</button>
+        <button type="button" data-color="blue">蓝</button>
+        <button type="button" data-color="green">绿</button>
+      </div>
       <div class="error" id="error"></div>
       <h2>圆环圆心</h2>
       <ul id="rings"></ul>
@@ -104,6 +127,23 @@
     const errorBox = document.getElementById("error");
     const rings = document.getElementById("rings");
     const objects = document.getElementById("objects");
+    const colorButtons = document.querySelectorAll("#colors button");
+
+    function markColor(color) {
+      colorButtons.forEach((button) => {
+        button.classList.toggle("active", button.dataset.color === (color || ""));
+      });
+    }
+
+    async function setColor(color) {
+      const response = await fetch("/color", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ color }),
+      });
+      if (!response.ok) throw new Error("颜色无效");
+      markColor(color);
+    }
 
     function list(node, items, emptyText, render) {
       node.replaceChildren();
@@ -136,6 +176,7 @@
         const response = await fetch("/status.json", { cache: "no-store" });
         const status = await response.json();
         meta.textContent = `相机 ${status.camera_index} · ${status.width}×${status.height} · ${Number(status.fps).toFixed(1)} FPS · ${status.mode}`;
+        markColor(status.locate_color || "");
         if (status.error) {
           errorBox.style.display = "block";
           errorBox.textContent = status.error;
@@ -158,6 +199,15 @@
         errorBox.textContent = "状态读取失败";
       }
     }
+
+    document.getElementById("colors").addEventListener("click", (event) => {
+      const button = event.target.closest("button");
+      if (!button) return;
+      setColor(button.dataset.color || "").catch(() => {
+        errorBox.style.display = "block";
+        errorBox.textContent = "识别颜色切换失败";
+      });
+    });
 
     refresh();
     setInterval(refresh, 300);

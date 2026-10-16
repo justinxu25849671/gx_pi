@@ -20,6 +20,7 @@ from .ring_detection import RingDetector, draw_ring_debug
 from .serial_link import SerialPathLink
 from .task_code import TaskCode
 from .vision import CameraVision, ObjectDetector, draw_object_debug_frame
+from .vision_locate import parse_locate_color, run_color_ring_locate
 from .vision_web import run_vision_web
 
 
@@ -224,6 +225,9 @@ def main() -> int:
                         help="验证单张离线图片，不打开相机或串口")
     parser.add_argument("--vision-output", type=Path,
                         help="--vision-image 的标注图片输出路径")
+    parser.add_argument("--vision-locate", metavar="COLOR",
+                        help="打开视觉定位：只识别该颜色圆环并发送圆心。"
+                             "颜色为 red/yellow/blue/green 或 1/2/3/4")
     parser.add_argument("--vision-web", action="store_true",
                         help="在浏览器中实时显示处理后的相机画面，不访问串口")
     parser.add_argument("--vision-web-host", default=None,
@@ -248,7 +252,7 @@ def main() -> int:
                            arguments.arm_jog, arguments.arm_move, arguments.arm_stop,
                            arguments.arm_status, arguments.servo,
                            arguments.vision_debug, arguments.vision_image,
-                           arguments.vision_web))
+                           arguments.vision_web, arguments.vision_locate))
         if conflicting:
             parser.error("固定流程不能与其他运行模式同用")
         try:
@@ -298,17 +302,37 @@ def main() -> int:
                         arguments.arm_stop, arguments.arm_status))
     mechanism_selected = arm_selected or arguments.servo is not None
     if mechanism_selected and (arguments.vision_image or arguments.vision_debug or
-                               arguments.vision_web or arguments.dry_run or
-                               arguments.plan_path or arguments.task):
+                               arguments.vision_web or arguments.vision_locate or
+                               arguments.dry_run or arguments.plan_path or arguments.task):
         parser.error("机构手动命令不能与视觉、任务码或路径预览模式同用")
 
     if arguments.vision_image:
-        if arguments.vision_debug or arguments.vision_web or arguments.vision_camera_index is not None:
+        if (arguments.vision_debug or arguments.vision_web or arguments.vision_locate or
+                arguments.vision_camera_index is not None):
             parser.error("--vision-image 不与相机调试参数同用")
         return _run_vision_image(config, arguments.vision_image,
                                  arguments.vision_output, arguments.vision_mode)
     if arguments.vision_output is not None:
         parser.error("--vision-output 必须与 --vision-image 同用")
+    if arguments.vision_locate and (arguments.vision_debug or arguments.vision_web or
+                                     arguments.vision_image):
+        parser.error("--vision-locate 不与其他视觉模式同用")
+    if arguments.vision_locate:
+        try:
+            color = parse_locate_color(arguments.vision_locate)
+        except ValueError as exc:
+            LOG.error("%s", exc)
+            return 2
+        try:
+            link = SerialPathLink(**config["serial"])
+        except Exception as exc:
+            LOG.error("视觉定位串口连接失败：%s", exc)
+            return 1
+        try:
+            return run_color_ring_locate(config, color, arguments.vision_camera_index,
+                                         link.path_client)
+        finally:
+            link.close()
     if arguments.vision_debug and arguments.vision_web:
         parser.error("--vision-debug 与 --vision-web 不能同用")
     if arguments.vision_web:

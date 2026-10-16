@@ -203,7 +203,7 @@ def encode_arm_move(motor_id: int, direction: int, pulses: int,
 
 
 def encode_vision_coordinate(x_px: int, y_px: int) -> bytes:
-    """编码画面中心坐标系下的物料圆心，单位为整数像素。
+    """编码画面中心坐标系下的指定颜色圆环圆心，单位为整数像素。
 
     原点在画面中心。x 向右为正，y 向下为正。该帧只携带坐标，不等待回复。
     """

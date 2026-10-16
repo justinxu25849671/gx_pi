@@ -7,7 +7,8 @@ import sys
 import threading
 import unittest
 from unittest.mock import Mock, patch
-from urllib.request import urlopen
+from urllib.error import HTTPError
+from urllib.request import Request, urlopen
 
 try:
     import numpy as np
@@ -59,6 +60,8 @@ class VisionWebTests(unittest.TestCase):
                 page = response.read().decode("utf-8")
             self.assertIn("/stream.mjpg", page)
             self.assertIn("圆环圆心", page)
+            self.assertIn("识别颜色", page)
+            self.assertIn('data-color="red"', page)
             with urlopen(base + "/snapshot.jpg", timeout=2) as response:
                 jpeg = response.read()
                 self.assertEqual(response.headers.get_content_type(), "image/jpeg")
@@ -76,6 +79,27 @@ class VisionWebTests(unittest.TestCase):
                     chunk += piece
             self.assertIn(b"--frame", chunk)
             self.assertIn(b"\xff\xd8", chunk)
+            request = Request(
+                base + "/color",
+                data=json.dumps({"color": "blue"}).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with urlopen(request, timeout=2) as response:
+                changed = json.loads(response.read().decode("utf-8"))
+            self.assertEqual(changed["color"], "blue")
+            with urlopen(base + "/status.json", timeout=2) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+            self.assertEqual(payload["locate_color"], "blue")
+            rejected = Request(
+                base + "/color",
+                data=json.dumps({"color": "purple"}).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with self.assertRaises(HTTPError) as caught:
+                urlopen(rejected, timeout=2)
+            self.assertEqual(caught.exception.code, 400)
         finally:
             hub.close()
             server.shutdown()

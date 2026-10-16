@@ -41,10 +41,12 @@
       "max_aspect_ratio": 1.80,
       "min_solidity": 0.75,
       "min_extent": 0.45,
+      "min_circularity": 0.80,
       "morphology_kernel_px": 5,
       "selection_reference_px": [960, 540],
       "stable_frames": 4,
       "stable_center_tolerance_px": 8,
+      "max_area_change_ratio": 1.6,
       "reference_point": {"mode": "min_enclosing_circle", "offset_px": [0, 0]}
     }
   },
@@ -131,11 +133,13 @@
     "canny_high": 160,
     "hough_dp": 1.2,
     "hough_min_distance_px": 80,
-    "hough_accumulator": 24,
-    "min_ellipse_axis_ratio": 0.65,
-    "proposal_min_arc_ratio": 0.15,
+    "hough_accumulator": 48,
+    "min_ellipse_axis_ratio": 0.80,
+    "proposal_min_arc_ratio": 0.45,
+    "detect_max_width_px": 640,
     "stable_frames": 4,
-    "stable_center_tolerance_px": 5
+    "stable_center_tolerance_px": 5,
+    "max_radius_change_ratio": 1.45
   },
   "vision_calibration": {
     "camera": {
