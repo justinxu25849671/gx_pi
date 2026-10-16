@@ -3,7 +3,6 @@
 import struct
 import unittest
 
-from logistics_robot.alignment import SerialVisionLocateLink
 from logistics_robot.path_client import PathClient, PathNackError, PathProtocolError
 from logistics_robot.path_protocol import (
     FrameDecoder, PathCommand, PathEventCode, PathPoint, PathResult, PathState,
@@ -111,11 +110,10 @@ class PathClientTests(unittest.TestCase):
     def test_visual_positioning_streams_coordinates_without_ack(self) -> None:
         fake = FakeStm32()
         fake.silent_commands.add(PathCommand.VISION_COORD)
-        link = SerialVisionLocateLink(fake.client)
-        link.start()
-        link.send_coordinate(12, -7)
-        link.send_coordinate(0, 3)
-        link.stop()
+        fake.client.start_visual_positioning()
+        fake.client.send_visual_coordinate(12, -7)
+        fake.client.send_visual_coordinate(0, 3)
+        fake.client.stop_visual_positioning()
         self.assertEqual([item[0] for item in fake.commands], [
             PathCommand.VISION_LOCATE_START,
             PathCommand.VISION_COORD,

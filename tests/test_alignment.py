@@ -1,57 +1,51 @@
-"""画面中心坐标系视觉定位，以及定位结束后的一次性放置。"""
+"""画面中心坐标系视觉定位。到位后结束，不下降、不松爪、不撤离。"""
 
 from __future__ import annotations
 
 import unittest
 
 from logistics_robot.alignment import (
-    ActionResult, AlignmentAction, AlignmentObservation, AlignmentState,
-    PlacementAlignmentController,
+    ActionResult, AlignmentObservation, AlignmentState, PlacementAlignmentController,
 )
 
 
-class FakeLocateLink:
+class FakeChassis:
     def __init__(self):
-        self.events = []
-        self.fail_start = False
-        self.fail_send = False
+        self.moves = []
+        self.stopped = 0
+        self.poll_result = ActionResult.SUCCEEDED
+        self.fail_move = False
         self.fail_stop = False
 
-    def start(self):
-        self.events.append("start")
-        if self.fail_start:
-            raise RuntimeError("定位指令无回复")
+    def move(self, kind, distance_mm):
+        self.moves.append((kind, distance_mm))
+        if self.fail_move:
+            raise RuntimeError("底盘指令失败")
 
-    def send_coordinate(self, x_px, y_px):
-        self.events.append(("coord", x_px, y_px))
-        if self.fail_send:
-            raise RuntimeError("坐标发送失败")
+    def poll(self):
+        return self.poll_result
 
     def stop(self):
-        self.events.append("stop")
+        self.stopped += 1
         if self.fail_stop:
             raise RuntimeError("停止失败")
 
 
-class FakeActuator:
-    def __init__(self):
-        self.started = []
-        self.results = []
-
-    def start(self, action, value=None):
-        self.started.append((action, value))
-
-    def poll(self, action):
-        return self.results.pop(0) if self.results else ActionResult.BUSY
-
-
 class AlignmentTests(unittest.TestCase):
     def setUp(self):
-        self.link = FakeLocateLink()
-        self.actuator = FakeActuator()
+        self.link = FakeChassis()
         self.config = {
             "min_target_quality": 0.7,
             "total_timeout_s": 20.0,
+            "lateral_tolerance_mm": 1.0,
+            "longitudinal_tolerance_mm": 1.0,
+            "max_correction_step_mm": 5.0,
+            "max_corrections": 8,
+            "required_aligned_frames": 2,
+            "mm_per_px_x": 1.0,
+            "mm_per_px_y": 1.0,
+            "x_positive": "right",
+            "y_positive": "forward",
         }
 
     def observation(self, x, y, valid=True, stable=True, quality=0.9,
@@ -61,86 +55,53 @@ class AlignmentTests(unittest.TestCase):
             image_width=width, image_height=height)
 
     def controller(self, now=None):
-        return PlacementAlignmentController(self.link, self.actuator, self.config, now=now)
+        return PlacementAlignmentController(self.link, self.config, now=now)
 
-    def test_start_once_then_stream_until_origin_and_release_once(self):
+    def test_centered_target_finishes_without_mechanism(self):
         controller = self.controller()
-        controller.tick(self.observation(130, 50))
-        controller.tick(self.observation(110, 90))
-        self.assertEqual(self.link.events, ["start", ("coord", 30, -30), ("coord", 10, 10)])
-        self.assertEqual(self.actuator.started, [])
+        first = controller.tick(self.observation(100, 80))
+        self.assertEqual(first.state, AlignmentState.ACQUIRE)
+        self.assertEqual(self.link.moves, [])
+        self.assertEqual(self.link.stopped, 0)
 
-        controller.tick(self.observation(100, 80))
-        self.assertNotIn(("coord", 0, 0), self.link.events)
-        self.assertEqual(self.link.events[-1], "stop")
-        self.assertEqual(self.actuator.started, [(AlignmentAction.DESCEND, None)])
-        self.assertTrue(controller.status().plane_locked)
-        self.assertFalse(controller.needs_observation)
-
-        controller.tick(self.observation(180, 20))
-        self.assertEqual(self.link.events.count("start"), 1)
-        self.assertEqual(self.link.events.count("stop"), 1)
-        self.assertEqual([item for item in self.link.events if item != "start" and item != "stop"],
-                         [("coord", 30, -30), ("coord", 10, 10)])
-
-        for expected in (AlignmentAction.RELEASE, AlignmentAction.RETREAT):
-            self.actuator.results.append(ActionResult.SUCCEEDED)
-            controller.tick(self.observation(9999, 9999))
-            controller.tick(self.observation(9999, 9999))
-            self.assertEqual(self.actuator.started[-1][0], expected)
-        self.actuator.results.append(ActionResult.SUCCEEDED)
-        status = controller.tick(self.observation(0, 0))
+        status = controller.tick(self.observation(100, 80))
         self.assertEqual(status.state, AlignmentState.COMPLETE)
-        self.assertEqual([action for action, _ in self.actuator.started].count(
-            AlignmentAction.RELEASE), 1)
+        self.assertTrue(status.plane_locked)
+        self.assertFalse(status.release_started)
+        self.assertFalse(status.released)
+        self.assertFalse(controller.needs_observation)
+        self.assertEqual(self.link.moves, [])
+        self.assertEqual(self.link.stopped, 1)
 
-    def test_unstable_target_does_not_send_coordinates_or_zero(self):
+        later = controller.tick(self.observation(180, 20))
+        self.assertEqual(later.state, AlignmentState.COMPLETE)
+        self.assertEqual(self.link.moves, [])
+        self.assertEqual(self.link.stopped, 1)
+
+    def test_offset_moves_chassis_and_does_not_finish(self):
         controller = self.controller()
-        controller.tick(self.observation(130, 50, stable=False))
-        controller.tick(self.observation(130, 50, quality=0.2))
+        status = controller.tick(self.observation(130, 80))
+        self.assertEqual(status.state, AlignmentState.ACQUIRE)
+        self.assertEqual(self.link.moves, [("rightmm", 5)])
+        self.assertFalse(status.plane_locked)
+
+    def test_unstable_target_does_not_move(self):
+        controller = self.controller()
+        controller.tick(self.observation(130, 80, stable=False))
+        controller.tick(self.observation(130, 80, quality=0.2))
         controller.tick(None)
-        self.assertEqual(self.link.events, ["start"])
-        self.assertEqual(self.actuator.started, [])
+        self.assertEqual(self.link.moves, [])
+        self.assertEqual(controller.status().state, AlignmentState.ACQUIRE)
 
-    def test_already_centered_stops_without_coordinate_frame(self):
-        controller = self.controller()
-        controller.tick(self.observation(100.4, 79.6))
-        self.assertEqual(self.link.events, ["start", "stop"])
-        self.assertEqual(self.actuator.started[0][0], AlignmentAction.DESCEND)
-
-    def test_start_failure_is_not_retried_and_does_not_stream(self):
-        self.link.fail_start = True
-        controller = self.controller()
-        first = controller.tick(self.observation(130, 50))
-        second = controller.tick(self.observation(130, 50))
-        self.assertEqual(first.state, AlignmentState.FAULT)
-        self.assertEqual(second.state, AlignmentState.FAULT)
-        self.assertEqual(self.link.events, ["start"])
-
-    def test_coordinate_failure_stops_positioning(self):
-        self.link.fail_send = True
-        controller = self.controller()
-        status = controller.tick(self.observation(130, 50))
-        self.assertEqual(status.state, AlignmentState.FAULT)
-        self.assertEqual(self.link.events, ["start", ("coord", 30, -30), "stop"])
-        self.assertEqual(self.actuator.started, [])
-
-    def test_timeout_after_start_sends_stop(self):
+    def test_timeout_faults_without_mechanism(self):
         clock = {"now": 0.0}
         controller = self.controller(now=lambda: clock["now"])
-        controller.tick(self.observation(130, 50))
+        controller.tick(self.observation(130, 80))
         clock["now"] = 21.0
-        status = controller.tick(self.observation(110, 90))
+        status = controller.tick(self.observation(110, 80))
         self.assertEqual(status.state, AlignmentState.FAULT)
-        self.assertEqual(self.link.events, ["start", ("coord", 30, -30), "stop"])
-
-    def test_failed_descend_does_not_retry(self):
-        controller = self.controller()
-        controller.tick(self.observation(100, 80))
-        self.actuator.results.append(ActionResult.FAILED)
-        status = controller.tick()
-        self.assertEqual(status.state, AlignmentState.FAULT)
-        self.assertEqual(len(self.actuator.started), 1)
+        self.assertIn("视觉定位超时", status.message)
+        self.assertFalse(status.released)
 
 
 if __name__ == "__main__":

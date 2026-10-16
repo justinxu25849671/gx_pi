@@ -16,11 +16,7 @@ from .model import MechanismAction, MissionStep
 
 
 class FeedbackMechanism:
-    """定位结束后的机构接口。
-
-    视觉定位由串口把物料圆心发给下位机，底盘调整不经过本接口。子类只需把下降、
-    松爪和撤离映射到已有机构协议，并从完成或失败事件返回结果。基类默认拒绝执行。
-    """
+    """机构动作接口。当前视觉定位结束后不调用下降、松爪或撤离。"""
 
     # 真实适配器完成 start/poll 后必须显式覆盖为 True。
     feedback_capable = False

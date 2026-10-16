@@ -1,4 +1,8 @@
-"""画面中心坐标系下的视觉定位，以及定位结束后的一次性放置。"""
+"""画面中心坐标系下的视觉定位。
+
+定位阶段只发送地面站同款底盘位置命令：前进、后退、左移、右移。
+这个阶段不发送机械臂命令。底盘进入容差后定位结束，不下降、不松爪、不撤离。
+"""
 
 from __future__ import annotations
 
@@ -35,6 +39,14 @@ class AlignmentState(str, Enum):
     FAULT = "FAULT"
 
 
+_KIND_TEXT = {
+    "fwdmm": "前进",
+    "bwdmm": "后退",
+    "leftmm": "左移",
+    "rightmm": "右移",
+}
+
+
 @dataclass(frozen=True)
 class AlignmentObservation:
     """当前帧物料圆心。``target_*`` 是画面绝对像素，不是中心坐标系。"""
@@ -62,133 +74,103 @@ class AlignmentStatus:
     message: str
 
 
-class VisionLocateLink(Protocol):
-    """下位机视觉定位：一条开始指令、圆心坐标流、一条停止指令。"""
+class ChassisMotionLink(Protocol):
+    """底盘前后左右。实现不得在这些方法里发送机械臂命令。"""
 
-    def start(self) -> None: ...
+    def move(self, kind: str, distance_mm: int) -> None: ...
 
-    def send_coordinate(self, x_px: int, y_px: int) -> None: ...
+    def poll(self) -> ActionResult: ...
 
     def stop(self) -> None: ...
 
 
-class FeedbackActuator(Protocol):
-    """定位完成后的下降、松爪和撤离。横移与伸缩不再由上位机逐轴下发。"""
-
-    def start(self, action: AlignmentAction, value: float | None = None) -> None: ...
-
-    def poll(self, action: AlignmentAction) -> ActionResult: ...
-
-
-class SerialVisionLocateLink:
-    """把路径客户端适配为视觉定位链路。"""
-
-    def __init__(self, client) -> None:
-        self._client = client
-
-    def start(self) -> None:
-        self._client.start_visual_positioning()
-
-    def send_coordinate(self, x_px: int, y_px: int) -> None:
-        self._client.send_visual_coordinate(x_px, y_px)
-
-    def stop(self) -> None:
-        self._client.stop_visual_positioning()
-
-
 class PlacementAlignmentController:
-    """视觉定位只发一条开始指令；收到回复后发送物料圆心，到原点后停止。"""
+    """用底盘位置步进把物料圆心收进容差，到位后结束定位。"""
 
-    def __init__(self, link: VisionLocateLink, actuator: FeedbackActuator,
-                 config: Mapping[str, Any], now=None) -> None:
+    def __init__(self, link: ChassisMotionLink, config: Mapping[str, Any], now=None) -> None:
         self._link = link
-        self._actuator = actuator
         self._min_quality = float(config["min_target_quality"])
         self._timeout = float(config["total_timeout_s"])
+        self._lateral_tolerance = float(config["lateral_tolerance_mm"])
+        self._longitudinal_tolerance = float(config["longitudinal_tolerance_mm"])
+        self._max_step = float(config["max_correction_step_mm"])
+        self._max_corrections = int(config["max_corrections"])
+        self._required_frames = int(config["required_aligned_frames"])
+        self._mm_per_px_x = float(config["mm_per_px_x"])
+        self._mm_per_px_y = float(config["mm_per_px_y"])
+        if config["x_positive"] not in ("left", "right"):
+            raise ValueError("x_positive 只能是 left 或 right")
+        if config["y_positive"] not in ("forward", "backward"):
+            raise ValueError("y_positive 只能是 forward 或 backward")
+        self._x_sign = 1.0 if config["x_positive"] == "right" else -1.0
+        self._y_sign = 1.0 if config["y_positive"] == "forward" else -1.0
         self._now = now or time.monotonic
         self._started_at = self._now()
         self._state = AlignmentState.ACQUIRE
-        self._pending: AlignmentAction | None = None
+        self._chassis_busy = False
+        self._corrections = 0
+        self._aligned_frames = 0
         self._plane_locked = False
-        self._release_started = False
-        self._released = False
-        self._locate_started = False
-        self._locate_active = False
-        self._message = "等待发送视觉定位指令"
+        self._message = "等待物料圆心"
 
     @property
     def needs_observation(self) -> bool:
-        """平面锁定后始终为假，定位结束后不再发送圆心坐标。"""
+        """定位结束后为假，不再根据画面继续调底盘。"""
         return self._state == AlignmentState.ACQUIRE and not self._plane_locked
 
-    def _fault(self, message: str) -> None:
-        extra = self._stop_locating()
-        if extra:
-            message = f"{message}；{extra}"
+    def _fault(self, message: str, *, stop: bool = True) -> None:
+        if stop:
+            extra = self._stop_chassis()
+            if extra:
+                message = f"{message}；{extra}"
         self._state = AlignmentState.FAULT
-        self._pending = None
+        self._chassis_busy = False
         self._message = message
 
-    def _stop_locating(self) -> str | None:
-        if not self._locate_active:
-            return None
-        self._locate_active = False
+    def _stop_chassis(self) -> str | None:
         try:
             self._link.stop()
         except Exception as exc:
-            return f"停止视觉定位失败：{exc}"
+            return f"停止底盘失败：{exc}"
         return None
 
-    def _start(self, action: AlignmentAction, value: float | None = None) -> None:
-        if self._pending is not None:
-            raise RuntimeError("已有动作未完成，禁止并行启动另一个执行机构")
-        if action == AlignmentAction.RELEASE:
-            if self._release_started:
-                raise RuntimeError("本次放置已发出过松爪命令，禁止重试")
-            self._release_started = True
-        try:
-            self._actuator.start(action, value)
-        except Exception as exc:
-            self._fault(f"{action.value} 启动失败：{exc}")
-            return
-        self._pending = action
-        self._state = AlignmentState.WAIT_ACTION
-        self._message = f"等待 {action.value} 完成反馈"
+    def _offsets_mm(self, x_px: int, y_px: int) -> tuple[float, float]:
+        """返回 ``(向右毫米, 向前毫米)``。符号由配置的画面正方向决定。"""
+        right = x_px * self._mm_per_px_x * self._x_sign
+        forward = y_px * self._mm_per_px_y * self._y_sign
+        return right, forward
 
-    def _after_action(self, action: AlignmentAction) -> None:
-        if action == AlignmentAction.DESCEND:
-            self._state = AlignmentState.RELEASE
-            self._message = "下降完成，准备松爪一次"
-        elif action == AlignmentAction.RELEASE:
-            self._released = True
-            self._state = AlignmentState.RETREAT
-            self._message = "已松爪，后续仅允许撤离"
-        elif action == AlignmentAction.RETREAT:
-            self._state = AlignmentState.COMPLETE
-            self._message = "一次性放置完成"
+    def _chassis_command(self, right_mm: float, forward_mm: float) -> tuple[str, int] | None:
+        lateral_out = abs(right_mm) > self._lateral_tolerance
+        longitudinal_out = abs(forward_mm) > self._longitudinal_tolerance
+        if not lateral_out and not longitudinal_out:
+            return None
+        if lateral_out and (not longitudinal_out or abs(right_mm) >= abs(forward_mm)):
+            kind = "rightmm" if right_mm > 0 else "leftmm"
+            error = abs(right_mm)
         else:
-            self._fault(f"视觉定位完成后不允许再执行 {action.value}")
+            kind = "fwdmm" if forward_mm > 0 else "bwdmm"
+            error = abs(forward_mm)
+        distance = int(math.floor(min(error, self._max_step) + 0.5))
+        return kind, max(1, distance)
 
-    def _begin_locating(self) -> bool:
-        """整段定位只发送一次开始指令。成功收到回复后返回真。"""
-        if self._locate_started:
-            return self._locate_active
-        self._locate_started = True
-        try:
-            self._link.start()
-        except Exception as exc:
-            self._fault(f"视觉定位指令失败：{exc}")
-            return False
-        self._locate_active = True
-        self._message = "已收到视觉定位回复，等待物料圆心"
-        return True
+    def _finish(self) -> None:
+        error = self._stop_chassis()
+        if error:
+            self._fault(error, stop=False)
+            return
+        self._plane_locked = True
+        self._state = AlignmentState.COMPLETE
+        self._message = "物料圆心已在底盘容差内，视觉定位结束"
 
-    def _stream_circle(self, observation: AlignmentObservation) -> None:
+    def _seek(self, observation: AlignmentObservation) -> None:
         if not observation.valid or not observation.stable:
-            self._message = "目标丢失或尚未稳定，暂不发送圆心坐标"
+            self._aligned_frames = 0
+            self._message = "目标丢失或尚未稳定，底盘保持不动"
             return
         if observation.quality < self._min_quality:
-            self._message = "目标质量不足，暂不发送圆心坐标"
+            self._aligned_frames = 0
+            self._message = "目标质量不足，底盘保持不动"
             return
         if not math.isfinite(observation.target_x_px + observation.target_y_px):
             self._fault("物料圆心坐标非法")
@@ -200,72 +182,72 @@ class PlacementAlignmentController:
         except ValueError as exc:
             self._fault(str(exc))
             return
-        if (x_px, y_px) == (0, 0):
-            error = self._stop_locating()
-            if error:
-                self._fault(error)
+        right_mm, forward_mm = self._offsets_mm(x_px, y_px)
+        if not math.isfinite(right_mm + forward_mm):
+            self._fault("底盘修正量非法")
+            return
+        command = self._chassis_command(right_mm, forward_mm)
+        if command is None:
+            self._aligned_frames += 1
+            if self._aligned_frames >= self._required_frames:
+                self._finish()
                 return
-            self._plane_locked = True
-            self._state = AlignmentState.DESCEND
-            self._message = "物料圆心已在画面原点，视觉定位结束"
-            self._start(AlignmentAction.DESCEND)
+            self._message = f"底盘已在容差内 {self._aligned_frames}/{self._required_frames}"
             return
+        self._aligned_frames = 0
+        if self._corrections >= self._max_corrections:
+            self._fault("底盘修正次数达到上限")
+            return
+        kind, distance_mm = command
         try:
-            self._link.send_coordinate(x_px, y_px)
+            self._link.move(kind, distance_mm)
         except Exception as exc:
-            self._fault(f"发送物料圆心失败：{exc}")
+            self._fault(f"底盘定位指令失败：{exc}")
             return
-        self._message = f"发送物料圆心 ({x_px}, {y_px})"
+        self._chassis_busy = True
+        self._corrections += 1
+        self._message = f"{_KIND_TEXT[kind]} {distance_mm} mm"
 
     def tick(self, observation: AlignmentObservation | None = None) -> AlignmentStatus:
-        """推进一个周期。定位阶段不驱动横移或伸缩。"""
+        """推进一个周期。定位阶段只查询或驱动底盘。"""
         if self._state in {AlignmentState.COMPLETE, AlignmentState.FAULT}:
             return self.status()
         if self._now() - self._started_at > self._timeout:
-            self._fault("放置流程总超时" if not self._released else "松爪后撤离超时")
+            self._fault("视觉定位超时")
             return self.status()
 
-        if self._pending is not None:
-            action = self._pending
+        if self._chassis_busy:
             try:
-                result = self._actuator.poll(action)
+                result = self._link.poll()
             except Exception as exc:
-                self._fault(f"{action.value} 完成反馈读取失败：{exc}")
+                self._fault(f"底盘状态读取失败：{exc}")
                 return self.status()
             if result == ActionResult.BUSY:
                 return self.status()
-            self._pending = None
+            self._chassis_busy = False
             if result == ActionResult.FAILED:
-                self._fault(f"{action.value} 动作失败；禁止自动重试")
+                self._fault("底盘动作失败；禁止自动重试")
                 return self.status()
-            self._after_action(action)
+            self._message = "底盘步进完成，等待下一帧"
             return self.status()
 
-        if self._state == AlignmentState.RELEASE:
-            self._start(AlignmentAction.RELEASE)
-            return self.status()
-        if self._state == AlignmentState.RETREAT:
-            self._start(AlignmentAction.RETREAT)
-            return self.status()
         if self._state != AlignmentState.ACQUIRE:
             self._fault("非法对准状态")
             return self.status()
-        if not self._begin_locating():
-            return self.status()
         if observation is None:
-            self._message = "尚未收到物料圆心，保持视觉定位"
+            self._message = "尚未收到物料圆心，底盘保持不动"
             return self.status()
-        self._stream_circle(observation)
+        self._seek(observation)
         return self.status()
 
     def status(self) -> AlignmentStatus:
         return AlignmentStatus(
             state=self._state,
-            pending_action=self._pending,
-            correction_count=0,
-            aligned_frames=0,
+            pending_action=None,
+            correction_count=self._corrections,
+            aligned_frames=self._aligned_frames,
             plane_locked=self._plane_locked,
-            release_started=self._release_started,
-            released=self._released,
+            release_started=False,
+            released=False,
             message=self._message,
         )

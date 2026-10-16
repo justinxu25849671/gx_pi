@@ -93,7 +93,7 @@ python3 -B main.py --vision-web --vision-mode combined
 
 视觉标定从 `object_camera.object_detection.roi`、遮挡区域、HSV 和参考点开始。黑白环单独用灰度/圆弧特征检测；现场确定三个环心后填写 `ring_detection.position_centers_px`，验证空环、遮挡和偏心图，再设置 `ring_detection.calibrated=true`。黄色 HSV 仍需现场标定。
 
-视觉定位使用物料最小外接圆圆心，并在画面上建立坐标：画面中心为 `(0, 0)`，x 向右为正，y 向下为正，单位是四舍五入后的整数像素。流程只有一段：上位机发送一次 `VISION_LOCATE_START`（`0x30`），收到回复后开始发送 `VISION_COORD`（`0x31`，`int16 x`、`int16 y`）；下位机据此自动调整底盘。圆心变为 `(0, 0)` 后不再发送坐标，并发送 `VISION_LOCATE_STOP`（`0x32`）。坐标帧不等待回复。目标丢失时不把缺测当成 `(0, 0)`。定位结束后才下降、松爪一次并撤离。`TimedMechanism` 只有固定时长，不提供真实动作完成反馈；下降、松爪和撤离的机构协议尚未接入，因此当前不应把视觉定位结果直接用于自动松爪。
+视觉定位使用物料最小外接圆圆心，并在画面上建立坐标：画面中心为 `(0, 0)`，x 向右为正，y 向下为正，单位是四舍五入后的整数像素。流程只有一段：上位机发送一次 `VISION_LOCATE_START`（`0x30`），收到回复后开始发送 `VISION_COORD`（`0x31`，`int16 x`、`int16 y`）；下位机据此自动调整底盘。圆心变为 `(0, 0)` 后不再发送坐标，并发送 `VISION_LOCATE_STOP`（`0x32`）。坐标帧不等待回复。目标丢失时不把缺测当成 `(0, 0)`。定位结束后不再下降、松爪或撤离。
 
 ## 机械臂手动调试
 

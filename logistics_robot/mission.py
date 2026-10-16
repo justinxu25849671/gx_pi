@@ -162,7 +162,7 @@ class LogisticsMission:
 
 
 class MissionPlacementCoordinator:
-    """把单次放置控制器的终态安全提交给总任务，不做松爪后视觉复查。"""
+    """推进视觉定位。定位结束只停止继续调底盘，不提交下降、松爪或撤离。"""
 
     def __init__(self, mission: LogisticsMission,
                  controller: PlacementAlignmentController) -> None:
@@ -171,17 +171,11 @@ class MissionPlacementCoordinator:
         self._submitted = False
 
     def tick(self, observation: AlignmentObservation | None = None):
-        # 平面锁定后显式丢弃上层仍传入的画面，确保下降、松爪和撤离不复查。
         current = observation if self._controller.needs_observation else None
         status = self._controller.tick(current)
         if self._submitted:
             return status
         if status.state == AlignmentState.COMPLETE:
-            self._mission.complete_aligned_placement(
-                completed=True,
-                released=status.released,
-                release_started=status.release_started,
-            )
             self._submitted = True
         elif status.state == AlignmentState.FAULT:
             self._mission.fail(status.message)
