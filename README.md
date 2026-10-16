@@ -83,9 +83,9 @@ python3 -B main.py --vision-image /path/to/photo.jpg --vision-mode combined
 
 `--dry-run` 只校验任务码，不启动串口或相机。任务码允许红 `1`、黄 `2`、蓝 `3`、绿 `4`；两批各三种不同颜色，第二批颜色需在第一批有同色物料。`--vision-debug` 只打开物料相机，二维码相机配置独立；物料相机优先 V4L2/MJPG。按 `q`/Esc 退出、`s` 保存标注图、`p` 打印检测细节。`--vision-camera-index N` 只覆盖本次物料相机编号。离线照片模式不打开相机、串口或机构；单张图不具备连续帧稳定性。
 
-视觉标定从 `object_camera.object_detection.roi`、遮挡区域、HSV 和参考点开始。黑白环单独用灰度/圆弧特征检测；现场确定三个环心后填写 `ring_detection.position_centers_px`，验证空环、遮挡和偏心图，再设置 `ring_detection.calibrated=true`。黄色 HSV、相机内参、透视映射及三个机构姿态的像素到毫米矩阵仍需现场标定。`vision_calibration.poses` 的零矩阵不可直接标记为已标定。
+视觉标定从 `object_camera.object_detection.roi`、遮挡区域、HSV 和参考点开始。黑白环单独用灰度/圆弧特征检测；现场确定三个环心后填写 `ring_detection.position_centers_px`，验证空环、遮挡和偏心图，再设置 `ring_detection.calibrated=true`。黄色 HSV 仍需现场标定。
 
-`PlacementAlignmentController` 的设计流程为：稳定目标 → 横移/伸缩并等待反馈 → 重新识别 → 对准后下降 → 松爪一次 → 撤离。第一层用环心，第二层用稳定的第一层同色物料参考点。`TimedMechanism` 只有固定时长，不提供真实动作完成反馈；完整机构协议和 `FeedbackMechanism` 适配尚未接入，因此当前不应把视觉识别结果直接用于自动松爪。
+视觉定位使用物料最小外接圆圆心，并在画面上建立坐标：画面中心为 `(0, 0)`，x 向右为正，y 向下为正，单位是四舍五入后的整数像素。流程只有一段：上位机发送一次 `VISION_LOCATE_START`（`0x30`），收到回复后开始发送 `VISION_COORD`（`0x31`，`int16 x`、`int16 y`）；下位机据此自动调整底盘。圆心变为 `(0, 0)` 后不再发送坐标，并发送 `VISION_LOCATE_STOP`（`0x32`）。坐标帧不等待回复。目标丢失时不把缺测当成 `(0, 0)`。定位结束后才下降、松爪一次并撤离。`TimedMechanism` 只有固定时长，不提供真实动作完成反馈；下降、松爪和撤离的机构协议尚未接入，因此当前不应把视觉定位结果直接用于自动松爪。
 
 ## 机械臂手动调试
 
@@ -132,7 +132,7 @@ Pi/F4 使用 `uart3`（F4 PB10/PB11，115200 8N1）的二进制帧：
 AA 55 | version=01 | command | sequence | length:u16LE | payload | CRC16-Modbus:u16LE
 ```
 
-路径命令为 `0x10..0x15`，机械臂命令为 `ARM_JOG=0x20`、`ARM_STOP=0x21`、`ARM_STATUS_REQ=0x22`、`ARM_MOVE=0x23`，舵机命令为 `SERVO_SET_ANGLE=0x24`，负载是 `servo_id:u8 + angle_tenths:u16LE`；ACK/NACK 为 `0x90/0x91`，其中舵机回包的 ID 字节必须等于请求的舵机编号。路径 `DONE/ERROR/STATUS` 为 `0x93/0x94/0x95`，机械臂 `STATUS/DONE` 为 `0xA0/0xA1`。实现分别在 `logistics_robot/path_protocol.py`、`path_client.py`、`route_executor.py`、`vision.py`、`ring_detection.py` 和 `placement_alignment.py`。
+路径命令为 `0x10..0x15`，机械臂命令为 `ARM_JOG=0x20`、`ARM_STOP=0x21`、`ARM_STATUS_REQ=0x22`、`ARM_MOVE=0x23`，舵机命令为 `SERVO_SET_ANGLE=0x24`，负载是 `servo_id:u8 + angle_tenths:u16LE`。视觉定位命令为 `VISION_LOCATE_START=0x30`、`VISION_COORD=0x31`（`x:int16LE + y:int16LE`，画面中心为原点，x 向右、y 向下）、`VISION_LOCATE_STOP=0x32`。ACK/NACK 为 `0x90/0x91`，其中舵机回包的 ID 字节必须等于请求的舵机编号。路径 `DONE/ERROR/STATUS` 为 `0x93/0x94/0x95`，机械臂 `STATUS/DONE` 为 `0xA0/0xA1`。实现分别在 `logistics_robot/path_protocol.py`、`path_client.py`、`route_executor.py`、`vision.py`、`ring_detection.py` 和 `alignment.py`。
 
 ```bash
 python3 -m unittest discover -s tests -v

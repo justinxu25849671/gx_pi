@@ -11,6 +11,25 @@ from typing import Any
 from .model import DetectedObject
 
 
+def image_origin_px(x_px: float, y_px: float, width: int, height: int) -> tuple[int, int]:
+    """把像素点换到画面中心坐标系。
+
+    原点是画面中心 ``(0, 0)``。x 向右为正，y 向下为正，结果为四舍五入后的整数像素。
+    """
+    if width <= 0 or height <= 0:
+        raise ValueError("画面宽高必须大于 0")
+    return (
+        _round_half_away(float(x_px) - width / 2.0),
+        _round_half_away(float(y_px) - height / 2.0),
+    )
+
+
+def _round_half_away(value: float) -> int:
+    if value >= 0:
+        return int(math.floor(value + 0.5))
+    return -int(math.floor(-value + 0.5))
+
+
 MATERIAL_COLORS = ("red", "yellow", "blue", "green")
 _DISPLAY_COLORS_BGR = {
     "red": (0, 0, 255), "yellow": (0, 255, 255),
@@ -169,12 +188,14 @@ class ObjectDetector:
                 center = (moments["m10"] / moments["m00"],
                           moments["m01"] / moments["m00"])
                 reference = self._reference_point(contour, (x, y, box_width, box_height), center)
+                circle_center, _radius = cv2.minEnclosingCircle(contour)
                 points = tuple((int(point[0][0]), int(point[0][1])) for point in contour)
                 objects.append(DetectedObject(
                     color=color, center_x_px=center[0], center_y_px=center[1],
                     area_px=area, bbox=(x, y, box_width, box_height), contour=points,
                     aspect_ratio=aspect, solidity=solidity, extent=extent,
                     reference_x_px=reference[0], reference_y_px=reference[1],
+                    circle_x_px=float(circle_center[0]), circle_y_px=float(circle_center[1]),
                 ))
         return self._stabilize(objects, frame.shape)
 
@@ -200,6 +221,13 @@ def draw_object_debug_frame(frame, objects: list[DetectedObject], fps: float,
         raise RuntimeError("未安装 OpenCV/numpy，请先执行 pip install -r requirements.txt") from exc
     annotated = frame.copy()
     height, width = annotated.shape[:2]
+    origin_x = width // 2
+    origin_y = height // 2
+    cv2.line(annotated, (0, origin_y), (max(0, width - 1), origin_y), (255, 220, 0), 1)
+    cv2.line(annotated, (origin_x, 0), (origin_x, max(0, height - 1)), (255, 220, 0), 1)
+    cv2.circle(annotated, (origin_x, origin_y), 4, (255, 220, 0), 1)
+    cv2.putText(annotated, "origin (0,0)  +x right  +y down",
+                (16, 84), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 220, 0), 2, cv2.LINE_AA)
     detection = dict((camera_config or {}).get("object_detection", camera_config or {}))
     roi = _rect_px(detection.get("roi", [0, 0, 1, 1]), width, height)
     cv2.rectangle(annotated, (roi[0], roi[1]), (max(roi[0], roi[2] - 1), max(roi[1], roi[3] - 1)),
@@ -227,9 +255,11 @@ def draw_object_debug_frame(frame, objects: list[DetectedObject], fps: float,
             cv2.circle(annotated, center, radius, bgr, 2)
         cv2.drawMarker(annotated, center, bgr, cv2.MARKER_CROSS, 10, 1)
         cv2.drawMarker(annotated, reference, (255, 255, 255), cv2.MARKER_TILTED_CROSS, 16, 2)
-        label = (f"{item.color} ref=({item.reference_point_px[0]:.1f},"
-                 f"{item.reference_point_px[1]:.1f}) A={item.area_px:.0f} "
-                 f"stable={item.stable_frames} Q={item.confidence:.2f}")
+        origin = image_origin_px(item.circle_center_px[0], item.circle_center_px[1],
+                                 width, height)
+        label = (f"{item.color} circle=({origin[0]},{origin[1]}) "
+                 f"A={item.area_px:.0f} stable={item.stable_frames} "
+                 f"Q={item.confidence:.2f}")
         cv2.putText(annotated, label, (max(0, reference[0] - 80), max(18, reference[1] - 18)),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, bgr, 2, cv2.LINE_AA)
 

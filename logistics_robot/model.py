@@ -29,6 +29,15 @@ class DetectedObject:
     stable: bool = False
     stable_frames: int = 0
     confidence: float = 0.0
+    circle_x_px: float | None = None
+    circle_y_px: float | None = None
+
+    @property
+    def circle_center_px(self) -> tuple[float, float]:
+        """最小外接圆圆心；未单独测量时退回轮廓重心。"""
+        if self.circle_x_px is None or self.circle_y_px is None:
+            return (self.center_x_px, self.center_y_px)
+        return (self.circle_x_px, self.circle_y_px)
 
     @property
     def reference_point_px(self) -> tuple[float, float]:

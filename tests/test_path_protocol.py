@@ -7,7 +7,7 @@ from logistics_robot.path_protocol import (
     AckEvent, DoneEvent, ErrorEvent, FrameDecoder, MAX_PAYLOAD, PathCommand,
     PathEventCode, PathPoint, PathResult, PathSegment, PathState,
     PointDoneEvent, StatusEvent, crc16_modbus, encode_frame,
-    encode_servo_angle, encode_upload, parse_event,
+    encode_servo_angle, encode_upload, encode_vision_coordinate, parse_event,
 )
 
 
@@ -21,6 +21,16 @@ class PathProtocolTests(unittest.TestCase):
                          "AA 55 01 15 03 00 00 ED CC")
         self.assertEqual(encode_frame(PathCommand.START, 5, b"\x01").hex(" ").upper(),
                          "AA 55 01 12 05 01 00 01 29 05")
+
+    def test_vision_coordinate_is_center_origin_int16(self) -> None:
+        payload = encode_vision_coordinate(-12, 7)
+        self.assertEqual(struct.unpack("<hh", payload), (-12, 7))
+        frame = encode_frame(PathCommand.VISION_COORD, 4, payload)
+        decoded = FrameDecoder().feed(frame)[0]
+        self.assertEqual(decoded.command, PathCommand.VISION_COORD)
+        self.assertEqual(decoded.payload, payload)
+        with self.assertRaises(ValueError):
+            encode_vision_coordinate(40000, 0)
 
     def test_crc_known_vector(self) -> None:
         self.assertEqual(crc16_modbus(b"123456789"), 0x4B37)

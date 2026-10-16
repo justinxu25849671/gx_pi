@@ -13,7 +13,9 @@ except ImportError:  # 与 requirements.txt 一致；缺依赖的开发机仍可
 
 from logistics_robot import app
 from logistics_robot.model import DetectedObject
-from logistics_robot.vision import CameraVision, ObjectDetector, draw_object_debug_frame
+from logistics_robot.vision import (
+    CameraVision, ObjectDetector, draw_object_debug_frame, image_origin_px,
+)
 
 
 class VisionTests(unittest.TestCase):
@@ -27,6 +29,13 @@ class VisionTests(unittest.TestCase):
         target = CameraVision.best_target(objects, "red", 500)
         self.assertEqual(target, objects[3])
         self.assertIsNone(CameraVision.best_target(objects, "yellow", 500))
+
+    def test_image_center_is_origin_and_y_increases_downward(self):
+        self.assertEqual(image_origin_px(100, 80, 200, 160), (0, 0))
+        self.assertEqual(image_origin_px(130, 50, 200, 160), (30, -30))
+        self.assertEqual(image_origin_px(100.4, 79.6, 200, 160), (0, 0))
+        self.assertEqual(image_origin_px(100.5, 80, 200, 160), (1, 0))
+        self.assertEqual(image_origin_px(99.5, 80, 200, 160), (-1, 0))
 
     @unittest.skipIf(np is None, "未安装 numpy/OpenCV，无法运行图像绘制测试")
     def test_draw_debug_frame_does_not_mutate_inputs(self):
@@ -92,6 +101,8 @@ class VisionTests(unittest.TestCase):
             self.assertEqual(len(objects), 1)
             self.assertEqual(objects[0].stable, index == 2)
         self.assertAlmostEqual(objects[0].reference_point_px[0], 99.5, delta=1.0)
+        self.assertAlmostEqual(objects[0].circle_center_px[0], objects[0].center_x_px, delta=8)
+        self.assertAlmostEqual(objects[0].circle_center_px[1], objects[0].center_y_px, delta=8)
 
 
 if __name__ == "__main__":

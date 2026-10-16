@@ -26,22 +26,28 @@ class TaskMissionTests(unittest.TestCase):
         self.assertEqual([(step.color, step.position) for step in stack],
                          [("blue", 3), ("yellow", 2), ("red", 1)])
 
-    def test_first_layer_uses_ring_second_layer_uses_stable_same_color(self):
+    def test_placement_target_is_material_circle_not_ring(self):
         ring = RingCandidate(10, 20, 30, 0.8, 1.0, 4, position=2,
                              valid=True, stable=True, stable_frames=4, quality=0.9)
+        material = DetectedObject(
+            "red", 31, 42, 1000, reference_x_px=32, reference_y_px=43,
+            stable=True, stable_frames=4, confidence=0.88,
+            circle_x_px=40, circle_y_px=50)
         first = MissionStep("temporary", MechanismAction.PLACE_TO_TEMPORARY,
                             "red", 2, 1)
-        target = resolve_placement_target(first, [ring], [])
-        self.assertEqual((target.source, target.target_x_px), ("ring", 10))
+        target = resolve_placement_target(first, [ring], [material], (200, 160))
+        self.assertEqual((target.source, target.target_x_px, target.target_y_px,
+                          target.image_width, target.image_height, target.valid),
+                         ("material_circle", 40, 50, 200, 160, True))
 
-        support = DetectedObject("red", 31, 42, 1000, reference_x_px=32,
-                                 reference_y_px=43, stable=True, stable_frames=4,
-                                 confidence=0.88)
         second = MissionStep("temporary", MechanismAction.STACK_TO_TEMPORARY,
                              "red", 2, 2)
-        target = resolve_placement_target(second, [ring], [support])
-        self.assertEqual((target.source, target.target_x_px, target.target_y_px),
-                         ("support_object", 32, 43))
+        stacked = resolve_placement_target(second, [ring], [material], (200, 160))
+        self.assertEqual((stacked.source, stacked.target_x_px, stacked.target_y_px),
+                         ("material_circle", 40, 50))
+        missing = resolve_placement_target(first, [ring], [], (200, 160))
+        self.assertFalse(missing.valid)
+        self.assertEqual(missing.source, "material_circle")
 
 
 if __name__ == "__main__":

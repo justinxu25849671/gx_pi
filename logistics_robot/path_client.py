@@ -12,7 +12,7 @@ from .path_protocol import (
     FrameDecoder, PathCommand, PathEvent,
     PathPoint, PathResult, PathState, PointDoneEvent, StatusEvent,
     encode_arm_jog, encode_arm_move, encode_frame, encode_servo_angle,
-    encode_upload, parse_event,
+    encode_upload, encode_vision_coordinate, parse_event,
 )
 
 
@@ -226,6 +226,27 @@ class PathClient:
         assert isinstance(event, ArmStatusEvent)
         if event.motor_id != motor_id:
             raise PathProtocolError("机械臂状态电机编号不匹配")
+        return event
+
+    def start_visual_positioning(self) -> AckEvent:
+        """发送一次视觉定位指令，并等待下位机回复。"""
+        event = self.request(PathCommand.VISION_LOCATE_START)
+        assert isinstance(event, AckEvent)
+        return event
+
+    def send_visual_coordinate(self, x_px: int, y_px: int) -> None:
+        """下发画面中心坐标系中的物料圆心。此帧不等待回复。"""
+        payload = encode_vision_coordinate(x_px, y_px)
+        if not self.connection_available:
+            raise ConnectionError("STM32 串口当前不可用")
+        with self._request_lock:
+            sequence = self._next_sequence()
+            self._write(encode_frame(PathCommand.VISION_COORD, sequence, payload))
+
+    def stop_visual_positioning(self) -> AckEvent:
+        """通知下位机退出视觉定位，并等待回复。"""
+        event = self.request(PathCommand.VISION_LOCATE_STOP)
+        assert isinstance(event, AckEvent)
         return event
 
     def set_servo_angle(self, servo_id: int, angle_tenths: int) -> AckEvent:

@@ -3,6 +3,7 @@
 import struct
 import unittest
 
+from logistics_robot.alignment import SerialVisionLocateLink
 from logistics_robot.path_client import PathClient, PathNackError, PathProtocolError
 from logistics_robot.path_protocol import (
     FrameDecoder, PathCommand, PathEventCode, PathPoint, PathResult, PathState,
@@ -16,6 +17,7 @@ class FakeStm32:
         self.commands = []
         self.nack_command = None
         self.drop_start_ack = False
+        self.silent_commands = set()
         self.running = False
         self.output_sequence = 0
 
@@ -27,6 +29,8 @@ class FakeStm32:
         frame = FrameDecoder().feed(raw)[0]
         command = PathCommand(frame.command)
         self.commands.append((command, frame.sequence, frame.payload))
+        if command in self.silent_commands:
+            return
         if command == PathCommand.STATUS_REQ:
             state = PathState.RUN_X if self.running or self.drop_start_ack else PathState.IDLE
             payload = struct.pack("<BBBBBiiii", 3, state, 0, 0, 2, 0, 0, 100, 200)
@@ -103,6 +107,24 @@ class PathClientTests(unittest.TestCase):
         fake = FakeStm32()
         fake.client.stop()
         self.assertEqual(fake.commands[-1][0], PathCommand.STOP)
+
+    def test_visual_positioning_streams_coordinates_without_ack(self) -> None:
+        fake = FakeStm32()
+        fake.silent_commands.add(PathCommand.VISION_COORD)
+        link = SerialVisionLocateLink(fake.client)
+        link.start()
+        link.send_coordinate(12, -7)
+        link.send_coordinate(0, 3)
+        link.stop()
+        self.assertEqual([item[0] for item in fake.commands], [
+            PathCommand.VISION_LOCATE_START,
+            PathCommand.VISION_COORD,
+            PathCommand.VISION_COORD,
+            PathCommand.VISION_LOCATE_STOP,
+        ])
+        self.assertEqual(fake.commands[1][2], struct.pack("<hh", 12, -7))
+        self.assertEqual([item[0] for item in fake.commands].count(
+            PathCommand.VISION_LOCATE_START), 1)
 
     def test_servo_angle_uses_device_id_in_ack(self) -> None:
         fake = FakeStm32()

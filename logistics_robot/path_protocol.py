@@ -25,6 +25,9 @@ class PathCommand(IntEnum):
     ARM_STATUS_REQ = 0x22
     ARM_MOVE = 0x23
     SERVO_SET_ANGLE = 0x24
+    VISION_LOCATE_START = 0x30
+    VISION_COORD = 0x31
+    VISION_LOCATE_STOP = 0x32
 
 
 class PathEventCode(IntEnum):
@@ -197,6 +200,19 @@ def encode_arm_move(motor_id: int, direction: int, pulses: int,
                          "6 号≤1600脉冲/60rpm，7 号≤6400脉冲/180rpm")
     return struct.pack("<BBHHB", motor_id, 0 if direction > 0 else 1,
                        pulses, rpm, acceleration)
+
+
+def encode_vision_coordinate(x_px: int, y_px: int) -> bytes:
+    """编码画面中心坐标系下的物料圆心，单位为整数像素。
+
+    原点在画面中心。x 向右为正，y 向下为正。该帧只携带坐标，不等待回复。
+    """
+    if (isinstance(x_px, bool) or isinstance(y_px, bool) or
+            not isinstance(x_px, int) or not isinstance(y_px, int)):
+        raise ValueError("视觉坐标必须是整数像素")
+    if not -32768 <= x_px <= 32767 or not -32768 <= y_px <= 32767:
+        raise ValueError("视觉坐标必须能放入 int16")
+    return struct.pack("<hh", x_px, y_px)
 
 
 def encode_servo_angle(servo_id: int, angle_tenths: int) -> bytes:
