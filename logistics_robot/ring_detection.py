@@ -46,7 +46,7 @@ def _rect_px(raw, width: int, height: int) -> tuple[int, int, int, int]:
 
 
 class RingDetector:
-    """通过可见圆弧、同心层数和位置关联筛选放置环。"""
+    """用边缘上的圆作为放置环。不要求同心层、圆弧完整度或 1..3 号环位。"""
 
     def __init__(self, config: Mapping[str, Any], cv2_module=None) -> None:
         if cv2_module is None:
@@ -118,63 +118,14 @@ class RingDetector:
             remaining = keep
             groups.append(group)
 
+        del edges, excluded
         candidates: list[RingCandidate] = []
-        min_layers = int(self._config.get("min_concentric_layers", 2))
-        min_arc = float(self._config.get("min_visible_arc_ratio", 0.30))
-        max_error = self._px("max_fit_error_px", 2.5)
         for group in groups:
-            # Hough 常会在同一条印刷线的内外边缘给出近似重复半径，先去重，
-            # 再用已知直径关系寻找能匹配最多层的像素/mm 比例。
-            radius_separation = self._px("min_radius_separation_px", 4.0)
-            distinct: list[tuple[float, float, float]] = []
-            for circle in sorted(group, key=lambda item: item[2]):
-                if not distinct or abs(circle[2] - distinct[-1][2]) >= radius_separation:
-                    distinct.append(circle)
-            diameters = [float(self._config.get("material_base_diameter_mm", 50.0))]
-            diameters.extend(float(value) for value in
-                             self._config.get("ring_outer_diameters_mm", []))
-            tolerance = float(self._config.get("diameter_tolerance_ratio", 0.10))
-            best_group: list[tuple[float, float, float]] = []
-            best_error = float("inf")
-            for circle in distinct:
-                for diameter in diameters:
-                    scale = (2.0 * circle[2]) / diameter
-                    chosen: dict[float, tuple[tuple[float, float, float], float]] = {}
-                    for observed in distinct:
-                        observed_mm = 2.0 * observed[2] / scale
-                        expected = min(diameters, key=lambda item: abs(item - observed_mm))
-                        error = abs(expected - observed_mm) / expected
-                        if error <= tolerance and (expected not in chosen or error < chosen[expected][1]):
-                            chosen[expected] = (observed, error)
-                    matched = [value[0] for value in chosen.values()]
-                    average_error = (sum(value[1] for value in chosen.values()) / len(chosen)
-                                     if chosen else float("inf"))
-                    if (len(matched), -average_error) > (len(best_group), -best_error):
-                        best_group = matched
-                        best_error = average_error
-            group = best_group
-            if not group:
-                continue
-            weights = [max(circle[2], 1.0) for circle in group]
-            total = sum(weights)
-            center_x = sum(circle[0] * weight for circle, weight in zip(group, weights)) / total
-            center_y = sum(circle[1] * weight for circle, weight in zip(group, weights)) / total
             outer = max(group, key=lambda item: item[2])
-            arc, error = self._arc_metrics(edges, excluded, center_x, center_y, outer[2])
-            if arc < min_arc:
-                continue
-            layers = len(group)
-            geometry_quality = max(0.0, 1.0 - best_error / max(tolerance, 1e-6))
-            quality = min(1.0, 0.45 * arc +
-                          0.30 * min(1.0, layers / max(min_layers + 1, 1)) +
-                          0.25 * geometry_quality)
-            valid = layers >= min_layers and arc >= min_arc and error <= max_error
-            reason = "" if valid else (f"圆弧/尺寸层质量不足 arc={arc:.2f} "
-                                       f"layers={layers} err={error:.2f} geo={best_error:.3f}")
-            candidates.append(RingCandidate(center_x, center_y, outer[2], arc, error,
-                                            layers, valid=valid, quality=quality,
-                                            reason=reason,
-                                            geometry_error_ratio=best_error))
+            candidates.append(RingCandidate(
+                outer[0], outer[1], outer[2], 1.0, 0.0, 1,
+                valid=True, quality=1.0,
+            ))
         return candidates
 
     def _circle_proposals(self, gray, edges):
@@ -245,15 +196,7 @@ class RingDetector:
                                          "多个环候选无法区分" if ambiguous else
                                          f"与 {position} 号环预计位置相差 {distance:.1f}px")))
         else:
-            valid = sorted((item for item in candidates if item.valid),
-                           key=lambda item: item.center_x_px)
-            if len(valid) == 3:
-                bound.extend(replace(item, position=index + 1)
-                             for index, item in enumerate(valid))
-            else:
-                bound.extend(replace(item, valid=False,
-                                     reason="未标定环位且不能唯一得到三个候选")
-                             for item in candidates)
+            return list(candidates)
         return bound
 
     def _stabilize(self, candidates: list[RingCandidate]) -> list[RingCandidate]:
@@ -322,7 +265,7 @@ class RingDetector:
                 for item in candidates]
 
     def detect(self, frame) -> list[RingCandidate]:
-        """检测并绑定 1..3 号环；配置未标定时仅输出有边缘支撑的圆。"""
+        """检测画面中的圆。不按直径、圆弧完整度或环位编号剔除。"""
         cv2 = self.cv2
         valid_mask, excluded = self._masks(frame.shape)
         gray, excluded, scale = self._detection_view(frame, valid_mask, excluded)

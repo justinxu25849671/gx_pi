@@ -260,6 +260,30 @@ class ObjectDetector:
         ))
 
 
+def draw_shape_segments(frame, objects: list[DetectedObject], target: DetectedObject | None = None):
+    """把每个颜色轮廓填成一块分割区域，并标出要发送的上层圆。"""
+    try:
+        import cv2
+        import numpy as np
+    except ImportError as exc:
+        raise RuntimeError("未安装 OpenCV/numpy，请先执行 pip install -r requirements.txt") from exc
+    output = frame.copy()
+    overlay = output.copy()
+    for item in objects:
+        if not item.contour:
+            continue
+        contour = np.asarray(item.contour, dtype=np.int32).reshape((-1, 1, 2))
+        cv2.drawContours(overlay, [contour], -1, _DISPLAY_COLORS_BGR[item.color], -1)
+    if any(item.contour for item in objects):
+        cv2.addWeighted(overlay, 0.45, output, 0.55, 0.0, output)
+    if target is not None:
+        center = (round(target.circle_center_px[0]), round(target.circle_center_px[1]))
+        cv2.circle(output, center, 10, (255, 255, 255), 2)
+        cv2.putText(output, "SEND", (center[0] + 12, max(18, center[1] - 12)),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2, cv2.LINE_AA)
+    return output
+
+
 def draw_object_debug_frame(frame, objects: list[DetectedObject], fps: float,
                             camera_index: int, camera_config: Mapping[str, Any] | None = None):
     """显示真实轮廓、抓取参考点、稳定帧数、ROI 和遮挡区域。"""

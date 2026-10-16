@@ -98,7 +98,7 @@
   <header>
     <div>
       <h1>处理后的相机画面</h1>
-      <p>画面中心为 (0, 0)，x 向右为正，y 向下为正。选择颜色后只识别该颜色圆环。此页面不发送底盘或机构命令。</p>
+      <p>画面中心为 (0, 0)，x 向右为正，y 向下为正。选择颜色后分割该颜色圆形，并把画面最上层的稳定圆心发给下位机。</p>
     </div>
   </header>
   <main>
@@ -116,6 +116,8 @@
         <button type="button" data-color="green">绿</button>
       </div>
       <div class="error" id="error"></div>
+      <h2>发送目标</h2>
+      <div class="meta" id="target">未选择颜色，不发送</div>
       <h2>圆环圆心</h2>
       <ul id="rings"></ul>
       <h2>物料圆心</h2>
@@ -126,6 +128,14 @@
     const meta = document.getElementById("meta");
     const errorBox = document.getElementById("error");
     const rings = document.getElementById("rings");
+    const targetBox = document.getElementById("target");
+    const sendText = {
+      idle: "未选择颜色，不发送",
+      waiting: "该颜色还没有稳定的上层圆形",
+      sending: "正在发送",
+      aligned: "圆心已到画面中心，定位结束",
+      error: "发送失败",
+    };
     const objects = document.getElementById("objects");
     const colorButtons = document.querySelectorAll("#colors button");
 
@@ -177,6 +187,11 @@
         const status = await response.json();
         meta.textContent = `相机 ${status.camera_index} · ${status.width}×${status.height} · ${Number(status.fps).toFixed(1)} FPS · ${status.mode}`;
         markColor(status.locate_color || "");
+        const target = status.target;
+        const state = sendText[status.send_state] || "未发送";
+        targetBox.textContent = target
+          ? `${target.color} 上层圆形 xy = (${target.x}, ${target.y}) · ${state}`
+          : state;
         if (status.error) {
           errorBox.style.display = "block";
           errorBox.textContent = status.error;

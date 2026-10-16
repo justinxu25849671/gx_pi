@@ -6,8 +6,9 @@ import logging
 from typing import Any
 
 from .calibration import FrameRectifier
-from .ring_detection import RingCandidate, RingDetector, draw_ring_debug
-from .vision import MATERIAL_COLORS, CameraVision, image_origin_px
+from .model import DetectedObject
+from .ring_detection import RingCandidate
+from .vision import MATERIAL_COLORS, CameraVision, draw_shape_segments, image_origin_px
 
 
 LOG = logging.getLogger(__name__)
@@ -43,6 +44,23 @@ def retain_hsv_color(frame, color: str, hsv_colors: dict[str, Any], cv2):
     return cv2.bitwise_and(frame, frame, mask=mask)
 
 
+def select_upper_circle(objects: list[DetectedObject]) -> DetectedObject | None:
+    """在已稳定的圆形里选画面最上层的一个。图像 y 越小越靠上。"""
+    stable = [item for item in objects if item.stable]
+    if not stable:
+        return None
+    return min(stable, key=lambda item: (item.circle_center_px[1], item.circle_center_px[0]))
+
+
+def upper_circle_coordinate(objects: list[DetectedObject], width: int,
+                            height: int) -> tuple[int, int] | None:
+    """上层稳定圆的画面中心坐标。没有稳定圆时不发。"""
+    target = select_upper_circle(objects)
+    if target is None:
+        return None
+    return image_origin_px(target.circle_center_px[0], target.circle_center_px[1], width, height)
+
+
 def locate_coordinate(rings: list[RingCandidate], width: int,
                       height: int) -> tuple[int, int] | None:
     """唯一稳定圆环才返回画面中心坐标。没有或不止一个时不发。"""
@@ -55,7 +73,7 @@ def locate_coordinate(rings: list[RingCandidate], width: int,
 
 def run_color_ring_locate(config: dict[str, Any], color: str,
                           camera_index: int | None, client) -> int:
-    """打开视觉定位，只识别 ``color`` 圆环并发送其圆心。"""
+    """打开视觉定位，分割指定颜色的圆形，并发送最上层那个的圆心。"""
     camera_config = dict(config["object_camera"])
     if camera_index is not None:
         camera_config["index"] = camera_index
@@ -64,34 +82,33 @@ def run_color_ring_locate(config: dict[str, Any], color: str,
     except RuntimeError as exc:
         LOG.error("无法打开物料识别相机：%s", exc)
         return 1
-    detector = RingDetector(config["ring_detection"], vision.cv2)
     rectifier = FrameRectifier(config["vision_calibration"].get("camera", {}), vision.cv2)
     started = False
     window = True
     try:
         client.start_visual_positioning()
         started = True
-        LOG.info("视觉定位已打开，只识别 %s 圆环", color)
+        LOG.info("视觉定位已打开，分割并发送最上层的 %s 圆形", color)
         while True:
             frame = rectifier.apply(vision.read())
-            masked = retain_hsv_color(frame, color, config["hsv_colors"], vision.cv2)
-            rings = detector.detect(masked)
+            objects = [item for item in vision.detect_objects(frame) if item.color == color]
+            target = select_upper_circle(objects)
             height, width = frame.shape[:2]
-            point = locate_coordinate(rings, width, height)
+            point = upper_circle_coordinate(objects, width, height)
             if point is None:
-                LOG.info("未锁定唯一的 %s 圆环，暂不发送坐标", color)
+                LOG.info("未锁定稳定的 %s 圆形，暂不发送坐标", color)
             elif point == (0, 0):
-                LOG.info("%s 圆环圆心已在画面原点，结束视觉定位", color)
+                LOG.info("%s 圆形圆心已在画面原点，结束视觉定位", color)
                 client.stop_visual_positioning()
                 started = False
                 return 0
             else:
                 client.send_visual_coordinate(point[0], point[1])
-                LOG.info("发送 %s 圆环圆心 (%d, %d)", color, point[0], point[1])
+                LOG.info("发送上层 %s 圆形圆心 (%d, %d)", color, point[0], point[1])
             if window:
                 try:
-                    annotated = draw_ring_debug(frame, rings)
-                    vision.cv2.imshow(f"Locate {color} ring", annotated)
+                    annotated = draw_shape_segments(frame, objects, target)
+                    vision.cv2.imshow(f"Locate {color} circle", annotated)
                     key = vision.cv2.waitKey(1) & 0xFF
                 except vision.cv2.error:
                     window = False

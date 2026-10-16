@@ -9,9 +9,11 @@ try:
 except ImportError:
     np = None
 
+from logistics_robot.model import DetectedObject
 from logistics_robot.ring_detection import RingCandidate, RingDetector
 from logistics_robot.vision_locate import (
     locate_coordinate, parse_locate_color, retain_hsv_color,
+    select_upper_circle, upper_circle_coordinate,
 )
 
 
@@ -22,6 +24,17 @@ class VisionLocateTests(unittest.TestCase):
         self.assertEqual(parse_locate_color("蓝"), "blue")
         with self.assertRaises(ValueError):
             parse_locate_color("purple")
+
+    def test_upper_stable_circle_is_sent(self):
+        lower = DetectedObject("blue", 80, 140, 4000, stable=True, stable_frames=8,
+                               circle_x_px=80, circle_y_px=140)
+        upper = DetectedObject("blue", 100, 40, 5000, stable=True, stable_frames=12,
+                               circle_x_px=100, circle_y_px=40)
+        brief = DetectedObject("blue", 90, 10, 3000, stable=False,
+                               circle_x_px=90, circle_y_px=10)
+        self.assertIs(select_upper_circle([lower, brief, upper]), upper)
+        self.assertEqual(upper_circle_coordinate([lower, upper], 200, 160), (0, -40))
+        self.assertIsNone(upper_circle_coordinate([brief], 200, 160))
 
     def test_coordinate_requires_exactly_one_stable_ring(self):
         ring = RingCandidate(130, 50, 40, 0.9, 1.0, 2, stable=True)

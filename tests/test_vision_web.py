@@ -19,7 +19,8 @@ from logistics_robot import app
 from logistics_robot.model import DetectedObject
 from logistics_robot.ring_detection import RingCandidate
 from logistics_robot.vision_web import (
-    FrameHub, VisionWebServer, annotate_vision_frame, encode_jpeg, vision_status,
+    FrameHub, VisionWebServer, _CircleSender, annotate_vision_frame, encode_jpeg,
+    vision_status,
 )
 
 
@@ -60,6 +61,7 @@ class VisionWebTests(unittest.TestCase):
                 page = response.read().decode("utf-8")
             self.assertIn("/stream.mjpg", page)
             self.assertIn("圆环圆心", page)
+            self.assertIn("发送目标", page)
             self.assertIn("识别颜色", page)
             self.assertIn('data-color="red"', page)
             with urlopen(base + "/snapshot.jpg", timeout=2) as response:
@@ -121,6 +123,20 @@ class VisionWebTests(unittest.TestCase):
             self.assertEqual(app.main(), 0)
         runner.assert_called_once_with(config, None, "rings", "0.0.0.0", 8091)
         serial_link.assert_not_called()
+
+    def test_sender_waits_without_serial_and_sends_locked_circle(self):
+        sender = _CircleSender({})
+        self.assertEqual(sender.update("", None), "idle")
+        self.assertIsNone(sender._link)
+        self.assertEqual(sender.update("blue", None), "waiting")
+        self.assertIsNone(sender._link)
+        client = Mock()
+        sender._link = Mock(path_client=client)
+        sender._started = True
+        self.assertEqual(sender.update("blue", (-135, -122)), "sending")
+        client.send_visual_coordinate.assert_called_once_with(-135, -122)
+        self.assertEqual(sender.update("blue", (0, 0)), "aligned")
+        client.stop_visual_positioning.assert_called_once()
 
 
 if __name__ == "__main__":

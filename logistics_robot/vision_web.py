@@ -14,8 +14,10 @@ from urllib.parse import urlsplit
 from .calibration import FrameRectifier
 from .model import DetectedObject
 from .ring_detection import RingCandidate, RingDetector, draw_ring_debug
-from .vision import CameraVision, draw_object_debug_frame, image_origin_px
-from .vision_locate import parse_locate_color, retain_hsv_color
+from .vision import CameraVision, draw_object_debug_frame, draw_shape_segments, image_origin_px
+from .vision_locate import (
+    parse_locate_color, retain_hsv_color, select_upper_circle, upper_circle_coordinate,
+)
 
 
 LOG = logging.getLogger(__name__)
@@ -75,7 +77,9 @@ class FrameHub:
 
 def vision_status(frame_shape, fps: float, camera_index: int, mode: str,
                   objects: list[DetectedObject], rings: list[RingCandidate],
-                  error: str = "", locate_color: str = "") -> dict[str, Any]:
+                  error: str = "", locate_color: str = "",
+                  target: DetectedObject | None = None,
+                  send_state: str = "idle") -> dict[str, Any]:
     """整理网页侧栏使用的画面中心坐标。"""
     height, width = int(frame_shape[0]), int(frame_shape[1])
     object_rows = []
@@ -103,7 +107,95 @@ def vision_status(frame_shape, fps: float, camera_index: int, mode: str,
         "width": width, "height": height, "camera_index": int(camera_index),
         "mode": mode, "locate_color": locate_color,
         "objects": object_rows, "rings": ring_rows,
+        "target": _target_row(target, width, height),
+        "send_state": send_state,
     }
+
+
+def _target_row(target: DetectedObject | None, width: int, height: int) -> dict[str, Any] | None:
+    if target is None:
+        return None
+    x_px, y_px = image_origin_px(target.circle_center_px[0], target.circle_center_px[1],
+                                 width, height)
+    return {
+        "color": target.color, "x": x_px, "y": y_px,
+        "stable_frames": int(target.stable_frames),
+    }
+
+
+class _CircleSender:
+    """选中颜色后，把上层稳定圆的圆心发给下位机。没选颜色时不打开串口。"""
+
+    def __init__(self, serial_config: dict[str, Any]) -> None:
+        self._config = dict(serial_config)
+        self._link = None
+        self._started = False
+        self._retry_after = 0.0
+        self.error = ""
+        self.state = "idle"
+
+    def update(self, color: str, point: tuple[int, int] | None) -> str:
+        if not color:
+            self.stop()
+            self.state = "idle"
+            return self.state
+        if point is None:
+            self.state = "waiting"
+            return self.state
+        if point == (0, 0):
+            self.stop()
+            self.state = "aligned"
+            return self.state
+        if not self._ensure_started():
+            self.state = "error"
+            return self.state
+        try:
+            self._link.path_client.send_visual_coordinate(point[0], point[1])
+            self.error = ""
+            self.state = "sending"
+        except Exception as exc:
+            self.error = str(exc)
+            self._started = False
+            self._retry_after = time.monotonic() + 2.0
+            self.state = "error"
+        return self.state
+
+    def _ensure_started(self) -> bool:
+        if self._started and self._link is not None:
+            return True
+        now = time.monotonic()
+        if now < self._retry_after:
+            return False
+        try:
+            if self._link is None:
+                from .serial_link import SerialPathLink
+                self._link = SerialPathLink(**self._config)
+            self._link.path_client.start_visual_positioning()
+            self._started = True
+            self.error = ""
+            return True
+        except Exception as exc:
+            self.error = str(exc)
+            self._started = False
+            self._retry_after = time.monotonic() + 2.0
+            return False
+
+    def stop(self) -> None:
+        if self._started and self._link is not None:
+            try:
+                self._link.path_client.stop_visual_positioning()
+            except Exception as exc:
+                self.error = str(exc)
+        self._started = False
+
+    def close(self) -> None:
+        self.stop()
+        if self._link is not None:
+            try:
+                self._link.close()
+            except Exception:
+                pass
+            self._link = None
 
 
 def annotate_vision_frame(frame, objects: list[DetectedObject], rings: list[RingCandidate],
@@ -251,6 +343,7 @@ def _camera_loop(config: dict[str, Any], camera_index: int | None, mode: str,
         vision = CameraVision(camera_config, config["hsv_colors"])
         ring_detector = RingDetector(config["ring_detection"], vision.cv2) if mode != "objects" else None
         rectifier = FrameRectifier(config["vision_calibration"].get("camera", {}), vision.cv2)
+        sender = _CircleSender(config.get("serial", {}))
         active_color = hub.get_locate_color()
         previous = time.perf_counter()
         while not stop.is_set():
@@ -270,10 +363,15 @@ def _camera_loop(config: dict[str, Any], camera_index: int | None, mode: str,
             if color:
                 objects = [item for item in objects if item.color == color]
             rings = ring_detector.detect(ring_frame) if ring_detector else []
-            annotated = annotate_vision_frame(frame, objects, rings, fps, selected_index,
+            target = select_upper_circle(objects) if color else None
+            point = upper_circle_coordinate(objects, frame.shape[1], frame.shape[0]) if color else None
+            send_state = sender.update(color, point)
+            segmented = draw_shape_segments(frame, objects, target)
+            annotated = annotate_vision_frame(segmented, objects, rings, fps, selected_index,
                                               camera_config, mode)
             status = vision_status(annotated.shape, fps, selected_index, mode, objects, rings,
-                                   locate_color=color)
+                                   sender.error if send_state == "error" else "",
+                                   color, target, send_state)
             hub.publish(encode_jpeg(annotated), status)
     except Exception as exc:
         LOG.error("视觉网页相机中断：%s", exc)
@@ -286,13 +384,15 @@ def _camera_loop(config: dict[str, Any], camera_index: int | None, mode: str,
             LOG.exception("视觉网页无法生成错误画面")
         stop.wait()
     finally:
+        if "sender" in locals():
+            sender.close()
         if vision is not None:
             vision.close()
 
 
 def run_vision_web(config: dict[str, Any], camera_index: int | None, mode: str,
                    host: str, port: int) -> int:
-    """启动浏览器预览。此函数不创建串口、路径或机构对象。"""
+    """启动浏览器预览。未选择颜色时不创建串口；选定颜色后才发送上层圆心。"""
     if not 1 <= int(port) <= 65535:
         LOG.error("网页端口必须在 1..65535")
         return 2
