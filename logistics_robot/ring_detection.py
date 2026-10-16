@@ -6,6 +6,8 @@ from dataclasses import dataclass, replace
 import math
 from typing import Any, Mapping
 
+from .vision import image_origin_px
+
 
 @dataclass(frozen=True)
 class RingCandidate:
@@ -282,15 +284,16 @@ def draw_ring_debug(frame, rings: list[RingCandidate]):
     except ImportError as exc:
         raise RuntimeError("未安装 OpenCV，请先执行 pip install -r requirements.txt") from exc
     output = frame.copy()
+    height, width = output.shape[:2]
     for item in rings:
         color = (0, 220, 0) if item.valid and item.stable else ((0, 180, 255) if item.valid else (0, 0, 255))
         center = (round(item.center_x_px), round(item.center_y_px))
-        cv2.circle(output, center, round(item.radius_px), color, 2)
+        origin = image_origin_px(item.center_x_px, item.center_y_px, width, height)
+        cv2.circle(output, center, max(1, round(item.radius_px)), color, 2)
         cv2.drawMarker(output, center, color, cv2.MARKER_CROSS, 18, 2)
-        label = (f"ring={item.position or '?'} arc={item.visible_arc_ratio:.2f} "
-                 f"err={item.fit_error_px:.1f} geo={item.geometry_error_ratio:.3f} "
-                 f"layers={item.concentric_layers} "
-                 f"stable={item.stable_frames}")
+        label = (f"ring={item.position or '?'} xy=({origin[0]},{origin[1]}) "
+                 f"arc={item.visible_arc_ratio:.2f} err={item.fit_error_px:.1f} "
+                 f"layers={item.concentric_layers} stable={item.stable_frames}")
         cv2.putText(output, label, (max(0, center[0] - round(item.radius_px)),
                                     max(18, center[1] - round(item.radius_px) - 8)),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2, cv2.LINE_AA)

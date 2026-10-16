@@ -23,6 +23,16 @@ python3 -B main.py --vision-debug --vision-mode rings
 标注图，`p` 打印轮廓、参考点、稳定帧、质量以及环心质量。OpenCV 窗口需要桌面、VNC
 或外接显示器，纯 SSH 通常不能显示。
 
+## 浏览器实时画面
+
+没有桌面时，把处理后的画面转发到网页。此入口同样不创建串口、路径或机构对象：
+
+```bash
+python3 -B main.py --vision-web --vision-mode combined
+```
+
+浏览器打开 `http://127.0.0.1:8080/`。画面上画出物料参考点、圆环和圆心，并标注以画面中心为原点的整数坐标。页面右侧用同一坐标系列出圆环和物料。`--vision-web-port` 可改端口。
+
 ## 离线照片
 
 离线模式不打开任何相机、串口或机构：

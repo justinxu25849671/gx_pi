@@ -20,6 +20,7 @@ from .ring_detection import RingDetector, draw_ring_debug
 from .serial_link import SerialPathLink
 from .task_code import TaskCode
 from .vision import CameraVision, ObjectDetector, draw_object_debug_frame
+from .vision_web import run_vision_web
 
 
 LOG = logging.getLogger(__name__)
@@ -223,6 +224,12 @@ def main() -> int:
                         help="验证单张离线图片，不打开相机或串口")
     parser.add_argument("--vision-output", type=Path,
                         help="--vision-image 的标注图片输出路径")
+    parser.add_argument("--vision-web", action="store_true",
+                        help="在浏览器中实时显示处理后的相机画面，不访问串口")
+    parser.add_argument("--vision-web-host", default=None,
+                        help="视觉网页监听地址，默认 0.0.0.0")
+    parser.add_argument("--vision-web-port", type=int, default=None,
+                        help="视觉网页端口，默认 8080")
     arguments = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     config = load_config(arguments.config)
@@ -240,7 +247,8 @@ def main() -> int:
                            arguments.path_status, arguments.path_stop,
                            arguments.arm_jog, arguments.arm_move, arguments.arm_stop,
                            arguments.arm_status, arguments.servo,
-                           arguments.vision_debug, arguments.vision_image))
+                           arguments.vision_debug, arguments.vision_image,
+                           arguments.vision_web))
         if conflicting:
             parser.error("固定流程不能与其他运行模式同用")
         try:
@@ -290,16 +298,25 @@ def main() -> int:
                         arguments.arm_stop, arguments.arm_status))
     mechanism_selected = arm_selected or arguments.servo is not None
     if mechanism_selected and (arguments.vision_image or arguments.vision_debug or
-                               arguments.dry_run or arguments.plan_path or arguments.task):
+                               arguments.vision_web or arguments.dry_run or
+                               arguments.plan_path or arguments.task):
         parser.error("机构手动命令不能与视觉、任务码或路径预览模式同用")
 
     if arguments.vision_image:
-        if arguments.vision_debug or arguments.vision_camera_index is not None:
+        if arguments.vision_debug or arguments.vision_web or arguments.vision_camera_index is not None:
             parser.error("--vision-image 不与相机调试参数同用")
         return _run_vision_image(config, arguments.vision_image,
                                  arguments.vision_output, arguments.vision_mode)
     if arguments.vision_output is not None:
         parser.error("--vision-output 必须与 --vision-image 同用")
+    if arguments.vision_debug and arguments.vision_web:
+        parser.error("--vision-debug 与 --vision-web 不能同用")
+    if arguments.vision_web:
+        return run_vision_web(config, arguments.vision_camera_index, arguments.vision_mode,
+                              arguments.vision_web_host or "0.0.0.0",
+                              8080 if arguments.vision_web_port is None else arguments.vision_web_port)
+    if (arguments.vision_web_host is not None or arguments.vision_web_port is not None):
+        parser.error("--vision-web-host/--vision-web-port 必须与 --vision-web 同用")
     if arguments.vision_debug:
         return _run_vision_debug(config, arguments.vision_camera_index,
                                  arguments.vision_mode)

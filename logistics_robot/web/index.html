@@ -1,0 +1,166 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>视觉定位画面</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f4f6f8;
+      --panel: #ffffff;
+      --line: #e3e8ee;
+      --text: #1c2430;
+      --muted: #5c6b7a;
+      --accent: #0b6bcb;
+      --ok: #0d7a45;
+      --warn: #9a6200;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+      background: var(--bg);
+      color: var(--text);
+    }
+    header {
+      display: flex;
+      justify-content: space-between;
+      gap: 16px;
+      align-items: baseline;
+      padding: 16px 20px 8px;
+    }
+    h1 { margin: 0; font-size: 20px; font-weight: 650; }
+    p { margin: 4px 0 0; color: var(--muted); font-size: 13px; }
+    main {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 320px;
+      gap: 16px;
+      padding: 12px 20px 20px;
+    }
+    .stage, .panel {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 12px;
+    }
+    .stage { padding: 10px; min-height: 360px; }
+    img {
+      display: block;
+      width: 100%;
+      height: auto;
+      background: #f7f8fa;
+      border-radius: 8px;
+    }
+    .panel { padding: 14px 16px 18px; }
+    h2 { margin: 14px 0 8px; font-size: 15px; }
+    .meta { color: var(--muted); font-size: 13px; line-height: 1.6; }
+    .error {
+      display: none;
+      margin-top: 10px;
+      padding: 8px 10px;
+      border-radius: 8px;
+      background: #fff1f2;
+      color: #9f1239;
+      font-size: 13px;
+    }
+    ul { list-style: none; margin: 0; padding: 0; }
+    li {
+      padding: 8px 0;
+      border-top: 1px solid var(--line);
+      font-size: 14px;
+      line-height: 1.45;
+    }
+    .xy { color: var(--accent); font-variant-numeric: tabular-nums; }
+    .ok { color: var(--ok); }
+    .warn { color: var(--warn); }
+    .empty { color: var(--muted); padding-top: 8px; font-size: 13px; }
+    @media (max-width: 860px) {
+      main { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div>
+      <h1>处理后的相机画面</h1>
+      <p>画面中心为 (0, 0)，x 向右为正，y 向下为正。此页面只显示识别结果，不发送底盘或机构命令。</p>
+    </div>
+  </header>
+  <main>
+    <section class="stage">
+      <img id="view" alt="处理后的相机画面" src="/stream.mjpg">
+    </section>
+    <aside class="panel">
+      <div class="meta" id="meta">等待画面…</div>
+      <div class="error" id="error"></div>
+      <h2>圆环圆心</h2>
+      <ul id="rings"></ul>
+      <h2>物料圆心</h2>
+      <ul id="objects"></ul>
+    </aside>
+  </main>
+  <script>
+    const meta = document.getElementById("meta");
+    const errorBox = document.getElementById("error");
+    const rings = document.getElementById("rings");
+    const objects = document.getElementById("objects");
+
+    function list(node, items, emptyText, render) {
+      node.replaceChildren();
+      if (!items || items.length === 0) {
+        const empty = document.createElement("div");
+        empty.className = "empty";
+        empty.textContent = emptyText;
+        node.appendChild(empty);
+        return;
+      }
+      for (const item of items) node.appendChild(render(item));
+    }
+
+    function row(text, xy, state) {
+      const li = document.createElement("li");
+      const name = document.createElement("div");
+      name.textContent = text;
+      const coord = document.createElement("div");
+      coord.className = "xy";
+      coord.textContent = xy;
+      const flag = document.createElement("div");
+      flag.className = state.ok ? "ok" : "warn";
+      flag.textContent = state.text;
+      li.append(name, coord, flag);
+      return li;
+    }
+
+    async function refresh() {
+      try {
+        const response = await fetch("/status.json", { cache: "no-store" });
+        const status = await response.json();
+        meta.textContent = `相机 ${status.camera_index} · ${status.width}×${status.height} · ${Number(status.fps).toFixed(1)} FPS · ${status.mode}`;
+        if (status.error) {
+          errorBox.style.display = "block";
+          errorBox.textContent = status.error;
+        } else {
+          errorBox.style.display = "none";
+          errorBox.textContent = "";
+        }
+        list(rings, status.rings, "当前没有圆环", (item) => row(
+          `环 ${item.position == null ? "未绑定" : item.position} · 半径 ${item.radius_px.toFixed(1)} px`,
+          `xy = (${item.x}, ${item.y})`,
+          { ok: item.valid && item.stable, text: item.reason || (item.stable ? "稳定" : "未稳定") }
+        ));
+        list(objects, status.objects, "当前没有物料", (item) => row(
+          item.color,
+          `xy = (${item.x}, ${item.y})`,
+          { ok: item.stable, text: item.stable ? `稳定 ${item.stable_frames} 帧` : `未稳定 ${item.stable_frames} 帧` }
+        ));
+      } catch (error) {
+        errorBox.style.display = "block";
+        errorBox.textContent = "状态读取失败";
+      }
+    }
+
+    refresh();
+    setInterval(refresh, 300);
+  </script>
+</body>
+</html>

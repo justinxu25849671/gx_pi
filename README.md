@@ -83,6 +83,14 @@ python3 -B main.py --vision-image /path/to/photo.jpg --vision-mode combined
 
 `--dry-run` 只校验任务码，不启动串口或相机。任务码允许红 `1`、黄 `2`、蓝 `3`、绿 `4`；两批各三种不同颜色，第二批颜色需在第一批有同色物料。`--vision-debug` 只打开物料相机，二维码相机配置独立；物料相机优先 V4L2/MJPG。按 `q`/Esc 退出、`s` 保存标注图、`p` 打印检测细节。`--vision-camera-index N` 只覆盖本次物料相机编号。离线照片模式不打开相机、串口或机构；单张图不具备连续帧稳定性。
 
+没有桌面时可以用浏览器看同一路处理后的画面。它不连接串口或机构：
+
+```bash
+python3 -B main.py --vision-web --vision-mode combined
+```
+
+默认监听 `0.0.0.0:8080`。在树莓派本机打开 `http://127.0.0.1:8080/`，同一局域网的电脑用树莓派 IP 加端口访问。页面左侧是标注后的实时画面，右侧列出圆环圆心和物料圆心在画面中心坐标系中的坐标。`--vision-web-host` 和 `--vision-web-port` 可改监听地址和端口。
+
 视觉标定从 `object_camera.object_detection.roi`、遮挡区域、HSV 和参考点开始。黑白环单独用灰度/圆弧特征检测；现场确定三个环心后填写 `ring_detection.position_centers_px`，验证空环、遮挡和偏心图，再设置 `ring_detection.calibrated=true`。黄色 HSV 仍需现场标定。
 
 视觉定位使用物料最小外接圆圆心，并在画面上建立坐标：画面中心为 `(0, 0)`，x 向右为正，y 向下为正，单位是四舍五入后的整数像素。流程只有一段：上位机发送一次 `VISION_LOCATE_START`（`0x30`），收到回复后开始发送 `VISION_COORD`（`0x31`，`int16 x`、`int16 y`）；下位机据此自动调整底盘。圆心变为 `(0, 0)` 后不再发送坐标，并发送 `VISION_LOCATE_STOP`（`0x32`）。坐标帧不等待回复。目标丢失时不把缺测当成 `(0, 0)`。定位结束后才下降、松爪一次并撤离。`TimedMechanism` 只有固定时长，不提供真实动作完成反馈；下降、松爪和撤离的机构协议尚未接入，因此当前不应把视觉定位结果直接用于自动松爪。
