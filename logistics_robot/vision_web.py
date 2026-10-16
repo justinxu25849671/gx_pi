@@ -253,11 +253,8 @@ def preview_frame(frame, preview_width: int):
 
 
 def render_preview(frame, objects, rings, fps, camera_index, camera_config, mode,
-                   preview_width, jpeg_quality, target, previous_jpeg: bytes | None,
-                   redraw: bool) -> bytes:
-    """有运动才重画预览。静止时沿用上一张 JPEG，坐标仍按当前检测结果更新。"""
-    if not redraw and previous_jpeg:
-        return previous_jpeg
+                   preview_width, jpeg_quality, target) -> bytes:
+    """每帧都按当前画面重画预览，避免网页停在旧图上。"""
     segmented = draw_shape_segments(frame, objects, target)
     annotated = annotate_vision_frame(segmented, objects, rings, fps, camera_index,
                                       camera_config, mode)
@@ -435,11 +432,9 @@ def _camera_loop(config: dict[str, Any], camera_index: int | None, mode: str,
         sender = _CircleSender(config.get("serial", {}))
         tuner = StreamTuner(float(config.get("vision_stream", {}).get("target_fps", 12)))
         motion_gate = MotionGate()
-        cached_objects: list[DetectedObject] = []
         cached_rings: list[RingCandidate] = []
         have_cache = False
         force_detect = True
-        last_jpeg: bytes | None = None
         active_color = hub.get_locate_color()
         previous = time.perf_counter()
         while not stop.is_set():
@@ -462,18 +457,18 @@ def _camera_loop(config: dict[str, Any], camera_index: int | None, mode: str,
             if ring_detector is not None:
                 ring_detector.set_detect_width(level.detect_width)
             sample = motion_gate.update(frame)
+            objects = (vision.detect_objects(frame, (color,) if color else None)
+                       if mode != "rings" else [])
             if force_detect or not sample.reuse or not have_cache:
                 regions = None if force_detect else sample.regions
-                objects = (vision.detect_objects(frame, (color,) if color else None, regions)
-                           if mode != "rings" else [])
                 rings = (ring_detector.detect(frame, regions, color or None, config["hsv_colors"])
                          if ring_detector else [])
-                cached_objects, cached_rings = objects, rings
+                cached_rings = rings
                 have_cache = True
                 force_detect = False
                 motion_name = "update"
             else:
-                objects, rings = cached_objects, cached_rings
+                rings = cached_rings
                 motion_name = "hold"
             target = select_upper_circle(objects) if color else None
             point = upper_circle_coordinate(objects, frame.shape[1], frame.shape[0]) if color else None
@@ -484,15 +479,14 @@ def _camera_loop(config: dict[str, Any], camera_index: int | None, mode: str,
                 "jpeg_quality": level.jpeg_quality,
                 "target_fps": tuner.target_fps,
             }
-            last_jpeg = render_preview(
+            jpeg = render_preview(
                 frame, objects, rings, fps, selected_index, camera_config, mode,
-                level.preview_width, level.jpeg_quality, target, last_jpeg,
-                motion_name != "hold",
+                level.preview_width, level.jpeg_quality, target,
             )
             status = vision_status(frame.shape, fps, selected_index, mode, objects, rings,
                                    sender.error if send_state == "error" else "",
                                    color, target, send_state, tune, motion_name)
-            hub.publish(last_jpeg, status)
+            hub.publish(jpeg, status)
     except Exception as exc:
         LOG.error("视觉网页相机中断：%s", exc)
         try:

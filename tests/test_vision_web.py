@@ -47,14 +47,13 @@ class VisionWebTests(unittest.TestCase):
         self.assertFalse(np.array_equal(annotated, original))
         self.assertTrue(encode_jpeg(annotated).startswith(b"\xff\xd8"))
 
-    def test_still_preview_reuses_the_previous_jpeg(self):
+    def test_preview_follows_the_current_frame(self):
         frame = np.zeros((48, 64, 3), dtype=np.uint8)
-        first = render_preview(frame, [], [], 10.0, 0, {}, "combined", 64, 70, None, None, True)
+        first = render_preview(frame, [], [], 10.0, 0, {}, "combined", 64, 70, None)
         frame[:] = (0, 0, 255)
-        held = render_preview(frame, [], [], 30.0, 0, {}, "combined", 32, 40, None, first, False)
-        self.assertEqual(held, first)
-        redrawn = render_preview(frame, [], [], 30.0, 0, {}, "combined", 64, 70, None, first, True)
-        self.assertNotEqual(redrawn, first)
+        updated = render_preview(frame, [], [], 30.0, 0, {}, "combined", 64, 70, None)
+        self.assertNotEqual(updated, first)
+        self.assertTrue(updated.startswith(b"\xff\xd8"))
 
     def test_http_serves_page_snapshot_status_and_stream(self):
         frame = np.zeros((48, 64, 3), dtype=np.uint8)

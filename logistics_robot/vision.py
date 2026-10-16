@@ -208,6 +208,69 @@ class ObjectDetector:
         self._tracks = next_tracks
         return emitted
 
+    def _cut_circle(self, contour, image_shape):
+        """从最大色块的轮廓上截出圆形。整块已经够圆时直接用它。"""
+        cv2 = self.cv2
+        import numpy as np
+        if self._round_cover(contour) >= 0.62:
+            return contour
+        mask = np.zeros(image_shape[:2], dtype=np.uint8)
+        cv2.drawContours(mask, [contour], -1, 255, -1)
+        widths = np.count_nonzero(mask, axis=1)
+        if widths.size == 0:
+            return None
+        max_width = int(widths.max())
+        if max_width < 8:
+            return None
+        radius = max_width / 2.0
+        span = int(radius)
+        height = mask.shape[0]
+        best_error = None
+        best_center_y = None
+        for center_y in range(span, max(span, height - span)):
+            error = 0.0
+            counted = 0
+            for offset in range(-span, span + 1):
+                row = center_y + offset
+                if not 0 <= row < height:
+                    continue
+                expected = 2.0 * math.sqrt(max(0.0, radius * radius - offset * offset))
+                error += abs(float(widths[row]) - expected)
+                counted += 1
+            if counted == 0:
+                continue
+            error /= counted
+            if best_error is None or error < best_error:
+                best_error = error
+                best_center_y = center_y
+        if best_center_y is None or best_error > 0.28 * max_width:
+            return None
+        band = mask[max(0, best_center_y - span):min(height, best_center_y + span + 1)]
+        columns = np.flatnonzero(band.any(axis=0))
+        if columns.size == 0:
+            return None
+        center_x = float(columns[0] + columns[-1]) / 2.0
+        disk = np.zeros_like(mask)
+        cv2.circle(disk, (int(round(center_x)), int(best_center_y)),
+                   int(round(radius)), 255, -1)
+        cut = cv2.bitwise_and(disk, mask)
+        found, _ = cv2.findContours(cut, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        if not found:
+            return None
+        face = max(found, key=cv2.contourArea)
+        if self._round_cover(face) < 0.5:
+            return None
+        return face
+
+    @staticmethod
+    def _round_cover(contour) -> float:
+        import cv2
+        area = float(cv2.contourArea(contour))
+        (_x, _y), radius = cv2.minEnclosingCircle(contour)
+        if radius <= 0:
+            return 0.0
+        return area / (math.pi * radius * radius)
+
     def detect(self, frame, colors=None, motion_regions=None) -> list[DetectedObject]:
         cv2 = self.cv2
         view, scale = self._detection_view(frame)
@@ -247,48 +310,50 @@ class ObjectDetector:
             mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
             mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
             contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-            for contour in contours:
-                area = float(cv2.contourArea(contour))
-                if not minimum <= area <= maximum:
-                    continue
-                x, y, box_width, box_height = cv2.boundingRect(contour)
-                if box_width <= 0 or box_height <= 0:
-                    continue
-                aspect = box_width / box_height
-                hull_area = float(cv2.contourArea(cv2.convexHull(contour)))
-                solidity = area / hull_area if hull_area > 0 else 0.0
-                extent = area / float(box_width * box_height)
-                if not min_aspect <= aspect <= max_aspect:
-                    continue
-                if solidity < min_solidity or extent < min_extent:
-                    continue
-                min_circularity = float(self._config.get("min_circularity", 0.0))
-                if min_circularity > 0:
-                    perimeter = cv2.arcLength(contour, True)
-                    circularity = (4.0 * math.pi * area / (perimeter * perimeter)
-                                   if perimeter > 0 else 0.0)
-                    if circularity < min_circularity:
-                        continue
-                moments = cv2.moments(contour)
-                if moments["m00"] == 0:
-                    continue
-                center = (moments["m10"] / moments["m00"],
-                          moments["m01"] / moments["m00"])
-                reference = self._reference_point(contour, (x, y, box_width, box_height), center)
-                circle_center, _radius = cv2.minEnclosingCircle(contour)
-                points = tuple((int(round(point[0][0] * factor)), int(round(point[0][1] * factor)))
-                               for point in contour)
-                objects.append(DetectedObject(
-                    color=color, center_x_px=center[0] * factor, center_y_px=center[1] * factor,
-                    area_px=area / area_scale,
-                    bbox=(int(round(x * factor)), int(round(y * factor)),
-                          int(round(box_width * factor)), int(round(box_height * factor))),
-                    contour=points,
-                    aspect_ratio=aspect, solidity=solidity, extent=extent,
-                    reference_x_px=reference[0] * factor, reference_y_px=reference[1] * factor,
-                    circle_x_px=float(circle_center[0]) * factor,
-                    circle_y_px=float(circle_center[1]) * factor,
-                ))
+            large = [item for item in contours if cv2.contourArea(item) >= minimum]
+            if not large:
+                continue
+            contour = max(large, key=cv2.contourArea)
+            contour = self._cut_circle(contour, hsv.shape)
+            if contour is None:
+                continue
+            area = float(cv2.contourArea(contour))
+            if not minimum <= area <= maximum:
+                continue
+            x, y, box_width, box_height = cv2.boundingRect(contour)
+            if box_width <= 0 or box_height <= 0:
+                continue
+            aspect = box_width / box_height
+            hull_area = float(cv2.contourArea(cv2.convexHull(contour)))
+            solidity = area / hull_area if hull_area > 0 else 0.0
+            extent = area / float(box_width * box_height)
+            if not min_aspect <= aspect <= max_aspect:
+                continue
+            if solidity < min_solidity or extent < min_extent:
+                continue
+            min_circularity = min(0.62, float(self._config.get("min_circularity", 0.62)))
+            if min_circularity > 0 and self._round_cover(contour) < min_circularity:
+                continue
+            moments = cv2.moments(contour)
+            if moments["m00"] == 0:
+                continue
+            center = (moments["m10"] / moments["m00"],
+                      moments["m01"] / moments["m00"])
+            reference = self._reference_point(contour, (x, y, box_width, box_height), center)
+            circle_center, _radius = cv2.minEnclosingCircle(contour)
+            points = tuple((int(round(point[0][0] * factor)), int(round(point[0][1] * factor)))
+                           for point in contour)
+            objects.append(DetectedObject(
+                color=color, center_x_px=center[0] * factor, center_y_px=center[1] * factor,
+                area_px=area / area_scale,
+                bbox=(int(round(x * factor)), int(round(y * factor)),
+                      int(round(box_width * factor)), int(round(box_height * factor))),
+                contour=points,
+                aspect_ratio=aspect, solidity=solidity, extent=extent,
+                reference_x_px=reference[0] * factor, reference_y_px=reference[1] * factor,
+                circle_x_px=float(circle_center[0]) * factor,
+                circle_y_px=float(circle_center[1]) * factor,
+            ))
         return self._stabilize(objects, frame.shape, motion_regions)
 
     def _detection_view(self, frame):

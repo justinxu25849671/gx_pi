@@ -40,6 +40,15 @@ class MaterialLearnTests(unittest.TestCase):
         self.assertEqual(bounds[0][0], 0)
         self.assertEqual(bounds[1][3], 179)
 
+    def test_one_sided_red_covers_the_other_hue_end_and_darker_pixels(self):
+        hsv = np.zeros((36, 36, 3), dtype=np.uint8)
+        hsv[:] = (8, 160, 200)
+        bounds = hsv_bounds_from_bgr(cv2.cvtColor(hsv, cv2.COLOR_HSV2BGR))
+        self.assertEqual(len(bounds), 2)
+        self.assertEqual(bounds[0][0], 0)
+        self.assertEqual(bounds[1][3], 179)
+        self.assertLess(bounds[0][2], 160)
+
     def test_pale_patch_is_rejected(self):
         gray = np.full((36, 36, 3), 40, dtype=np.uint8)
         with self.assertRaises(ValueError):

@@ -9,7 +9,7 @@ from typing import Any
 import numpy as np
 
 
-def crop_patch(frame, x: float, y: float, radius: int = 28):
+def crop_patch(frame, x: float, y: float, radius: int = 42):
     """复制点击点周围的小块。点必须落在画面内。"""
     height, width = frame.shape[:2]
     cx = int(round(float(x)))
@@ -28,23 +28,29 @@ def hsv_bounds_from_bgr(bgr) -> list[list[int]]:
         raise ValueError("采样区域为空")
     hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
     pixels = hsv.reshape(-1, 3)
-    keep = pixels[(pixels[:, 1] >= 40) & (pixels[:, 2] >= 40)]
+    keep = pixels[(pixels[:, 1] >= 25) & (pixels[:, 2] >= 25)]
     if len(keep) < 20:
         raise ValueError("采样点颜色太淡，请点在物料表面上")
     hues = keep[:, 0].astype(int)
-    saturation = int(max(30, np.percentile(keep[:, 1], 10) - 25))
-    value = int(max(30, np.percentile(keep[:, 2], 10) - 30))
+    saturation = int(max(15, np.percentile(keep[:, 1], 5) - 90))
+    value = int(max(15, np.percentile(keep[:, 2], 5) - 90))
+    hue_pad = 18
+    raw_low = int(np.percentile(hues, 5))
+    raw_high = int(np.percentile(hues, 95))
     low = hues[hues < 90]
     high = hues[hues >= 90]
-    if (len(low) > 0.2 * len(hues) and len(high) > 0.2 * len(hues)
-            and int(low.min()) < 20 and int(high.max()) > 160):
+    crosses = (len(low) > 0.2 * len(hues) and len(high) > 0.2 * len(hues)
+               and int(low.min()) < 20 and int(high.max()) > 160)
+    if crosses or raw_low <= 12 or raw_high >= 168:
+        high_end = _clamp_hue(float(np.percentile(low, 95)) + hue_pad) if len(low) else 18
+        low_start = _clamp_hue(float(np.percentile(high, 5)) - hue_pad) if len(high) else 164
         return [
-            [0, saturation, value, _clamp_hue(float(np.percentile(low, 95)) + 8), 255, 255],
-            [_clamp_hue(float(np.percentile(high, 5)) - 8), saturation, value, 179, 255, 255],
+            [0, saturation, value, max(high_end, 18), 255, 255],
+            [min(low_start, 164), saturation, value, 179, 255, 255],
         ]
     return [[
-        _clamp_hue(float(np.percentile(hues, 5)) - 8), saturation, value,
-        _clamp_hue(float(np.percentile(hues, 95)) + 8), 255, 255,
+        _clamp_hue(float(raw_low) - hue_pad), saturation, value,
+        _clamp_hue(float(raw_high) + hue_pad), 255, 255,
     ]]
 
 

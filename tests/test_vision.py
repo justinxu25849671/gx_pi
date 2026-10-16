@@ -95,7 +95,7 @@ class VisionTests(unittest.TestCase):
         detector = ObjectDetector(config, hsv, cv2)
         frame = np.zeros((120, 160, 3), dtype=np.uint8)
         cv2.rectangle(frame, (4, 40), (32, 68), (0, 0, 255), -1)  # ROI 外，应屏蔽。
-        cv2.rectangle(frame, (82, 42), (112, 72), (0, 0, 255), -1)
+        cv2.circle(frame, (97, 57), 15, (0, 0, 255), -1)
         for index in range(3):
             objects = detector.detect(frame)
             self.assertEqual(len(objects), 1 if index == 2 else 0)
@@ -126,6 +126,54 @@ class VisionTests(unittest.TestCase):
         objects = detector.detect(frame)
         self.assertEqual(len(objects), 1)
         self.assertLess(abs(objects[0].center_x_px - 60), 8)
+
+    @unittest.skipIf(np is None, "未安装 numpy/OpenCV，无法运行图像检测测试")
+    def test_side_view_cylinder_top_is_recognized(self):
+        import cv2
+        config = {
+            "object_detection": {
+                "min_area_px": 200, "max_area_px": 20000,
+                "min_aspect_ratio": 0.4, "max_aspect_ratio": 1.8,
+                "min_solidity": 0.7, "min_extent": 0.4,
+                "min_circularity": 0.8,
+                "stable_frames": 1,
+            }
+        }
+        hsv = {color: [[0, 0, 0, 1, 1, 1]]
+               for color in ("red", "yellow", "blue", "green")}
+        hsv["red"] = [[0, 80, 80, 15, 255, 255]]
+        detector = ObjectDetector(config, hsv, cv2)
+        frame = np.zeros((180, 200, 3), dtype=np.uint8)
+        cv2.rectangle(frame, (58, 78), (102, 150), (0, 45, 140), -1)
+        cv2.circle(frame, (80, 70), 28, (0, 0, 230), -1)
+        objects = detector.detect(frame)
+        self.assertEqual(len(objects), 1)
+        self.assertLess(abs(objects[0].circle_center_px[0] - 80), 8)
+        self.assertLess(abs(objects[0].circle_center_px[1] - 70), 10)
+
+    @unittest.skipIf(np is None, "未安装 numpy/OpenCV，无法运行图像检测测试")
+    def test_only_the_largest_color_blob_is_cut_into_a_circle(self):
+        import cv2
+        config = {
+            "object_detection": {
+                "min_area_px": 100, "max_area_px": 20000,
+                "min_aspect_ratio": 0.4, "max_aspect_ratio": 1.8,
+                "min_solidity": 0.7, "min_extent": 0.4,
+                "min_circularity": 0.55,
+                "stable_frames": 1,
+            }
+        }
+        hsv = {color: [[0, 0, 0, 1, 1, 1]]
+               for color in ("red", "yellow", "blue", "green")}
+        hsv["red"] = [[0, 80, 80, 12, 255, 255]]
+        detector = ObjectDetector(config, hsv, cv2)
+        frame = np.zeros((180, 220, 3), dtype=np.uint8)
+        cv2.circle(frame, (40, 40), 14, (0, 0, 255), -1)
+        cv2.circle(frame, (140, 90), 32, (0, 0, 255), -1)
+        objects = detector.detect(frame)
+        self.assertEqual(len(objects), 1)
+        self.assertLess(abs(objects[0].circle_center_px[0] - 140), 8)
+        self.assertLess(abs(objects[0].circle_center_px[1] - 90), 8)
 
     def test_brief_hit_and_area_jump_are_hidden(self):
         import cv2
