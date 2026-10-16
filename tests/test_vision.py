@@ -145,11 +145,18 @@ class VisionTests(unittest.TestCase):
 
         self.assertEqual(seen(1000), [])
         self.assertEqual(seen(1000), [])
-        self.assertEqual(len(seen(1000)), 1)
+        locked = seen(1000)
+        self.assertEqual(len(locked), 1)
+        self.assertEqual(locked[0].track_id, 1)
         self.assertEqual(seen(4000), [])
         kept = seen(1000)
         self.assertEqual(len(kept), 1)
+        self.assertEqual(kept[0].track_id, 1)
         self.assertAlmostEqual(kept[0].area_px, 1000)
+        outside = DetectedObject("red", 50, 50, 1000, reference_x_px=50, reference_y_px=50,
+                                  solidity=1.0, extent=1.0)
+        fresh = ObjectDetector(config, hsv, cv2)
+        self.assertEqual(fresh._stabilize([outside], (100, 100), [(0, 0, 10, 10)]), [])
 
 
 if __name__ == "__main__":

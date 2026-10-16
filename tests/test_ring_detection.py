@@ -86,6 +86,43 @@ class RingDetectionTests(unittest.TestCase):
         self.assertEqual(len(kept), 1)
         self.assertAlmostEqual(kept[0].radius_px, 40)
 
+    def test_moving_ring_is_followed_and_held_when_missed(self):
+        detector = RingDetector({
+            "stable_frames": 1, "stable_center_tolerance_px": 5, "track_motion_px": 80,
+            "track_hold_frames": 2, "track_smooth": 1,
+        }, cv2_module=object())
+
+        def circle(x):
+            return RingCandidate(x, 80, 30, 1.0, 0.0, 1, valid=True)
+
+        first = detector._persist([circle(100)])
+        self.assertEqual(round(first[0].center_x_px), 100)
+        self.assertEqual(first[0].track_id, 1)
+        followed = detector._persist([circle(150)])
+        self.assertEqual(len(followed), 1)
+        self.assertEqual(round(followed[0].center_x_px), 150)
+        self.assertGreaterEqual(followed[0].stable_frames, 2)
+        self.assertEqual(followed[0].track_id, 1)
+        self.assertEqual(detector._persist([]), [])
+        resumed = detector._persist([circle(200)])
+        self.assertEqual(len(resumed), 1)
+        self.assertEqual(round(resumed[0].center_x_px), 200)
+        self.assertGreaterEqual(resumed[0].stable_frames, 3)
+        self.assertEqual(resumed[0].track_id, 1)
+
+    def test_static_candidate_outside_motion_does_not_get_a_track(self):
+        detector = RingDetector({
+            "stable_frames": 1, "stable_center_tolerance_px": 5, "track_motion_px": 80,
+            "track_smooth": 1,
+        }, cv2_module=object())
+        moving = RingCandidate(120, 80, 30, 1.0, 0.0, 1, valid=True)
+        still = RingCandidate(10, 10, 30, 1.0, 0.0, 1, valid=True)
+        emitted = detector._persist([moving, still], [(90, 60, 80, 40)])
+        self.assertEqual([item.track_id for item in emitted], [1])
+        followed = detector._persist([RingCandidate(150, 80, 30, 1.0, 0.0, 1, valid=True)],
+                                     [(110, 60, 80, 40)])
+        self.assertEqual(followed[0].track_id, 1)
+
 
 if __name__ == "__main__":
     unittest.main()

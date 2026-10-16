@@ -42,6 +42,7 @@
       "min_solidity": 0.75,
       "min_extent": 0.45,
       "min_circularity": 0.80,
+      "detect_max_width_px": 640,
       "morphology_kernel_px": 5,
       "selection_reference_px": [960, 540],
       "stable_frames": 4,
@@ -137,8 +138,10 @@
     "min_ellipse_axis_ratio": 0.80,
     "proposal_min_arc_ratio": 0.45,
     "detect_max_width_px": 640,
-    "stable_frames": 4,
+    "stable_frames": 1,
     "stable_center_tolerance_px": 5,
+    "track_motion_px": 160,
+    "track_hold_frames": 2,
     "max_radius_change_ratio": 1.45
   },
   "vision_calibration": {

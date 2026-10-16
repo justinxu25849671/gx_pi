@@ -10,6 +10,7 @@ import sys
 from typing import Any
 
 from .model import DetectedObject
+from .motion_gate import point_in_regions, search_mask
 
 
 def image_origin_px(x_px: float, y_px: float, width: int, height: int) -> tuple[int, int]:
@@ -68,6 +69,15 @@ class ObjectDetector:
             raise ValueError("物料 HSV 只能且必须配置 red/yellow/blue/green 四种颜色")
         self._hsv_colors = hsv_colors
         self._tracks: list[dict[str, Any]] = []
+        self._next_track_id = 1
+
+    def clear_tracks(self) -> None:
+        """颜色范围刚学完时丢掉旧轨迹，避免沿用学习前的目标。"""
+        self._tracks.clear()
+
+    def set_detect_width(self, width: int) -> None:
+        """运行中改检测图宽度，供画质和帧率自动调节。"""
+        self._config["detect_max_width_px"] = max(160, int(width))
 
     def _valid_mask(self, shape):
         import numpy as np
@@ -128,7 +138,8 @@ class ObjectDetector:
             matches[detection_index] = track_index
         return matches
 
-    def _stabilize(self, objects: list[DetectedObject], shape) -> list[DetectedObject]:
+    def _stabilize(self, objects: list[DetectedObject], shape,
+                   motion_regions=None) -> list[DetectedObject]:
         """连续出现才输出。面积突然变大或变小的那一帧不输出。"""
         del shape
         tolerance = float(self._config.get("stable_center_tolerance_px", 8.0))
@@ -141,17 +152,24 @@ class ObjectDetector:
             point = item.reference_point_px
             track = None if detection_index not in matches else dict(self._tracks[matches[detection_index]])
             if track is None:
+                if motion_regions is not None and not point_in_regions(
+                        point[0], point[1], motion_regions):
+                    continue
                 track = {
-                    "color": item.color, "x": point[0], "y": point[1],
+                    "id": self._next_track_id, "color": item.color, "x": point[0], "y": point[1],
                     "area": item.area_px, "count": 1,
                     "pending_area": None, "pending_count": 0,
                 }
+                self._next_track_id += 1
                 next_tracks.append(track)
                 if required <= 1:
                     confidence = min(1.0, 0.45 * item.solidity + 0.25 * item.extent + 0.30)
-                    emitted.append(replace(item, stable=True, stable_frames=1, confidence=confidence))
+                    emitted.append(replace(item, stable=True, stable_frames=1, confidence=confidence,
+                                           track_id=int(track["id"])))
                 continue
-            track["x"], track["y"] = point[0], point[1]
+            alpha = min(1.0, max(0.05, float(self._config.get("track_smooth", 0.62))))
+            track["x"] = point[0] * alpha + float(track["x"]) * (1.0 - alpha)
+            track["y"] = point[1] * alpha + float(track["y"]) * (1.0 - alpha)
             if self._size_ratio(item.area_px, track["area"]) > max_ratio:
                 pending = track["pending_area"]
                 if pending is not None and self._size_ratio(item.area_px, pending) <= max_ratio:
@@ -177,27 +195,45 @@ class ObjectDetector:
                 continue
             confidence = min(1.0, 0.45 * item.solidity + 0.25 * item.extent +
                              0.30 * min(1.0, track["count"] / max(required, 1)))
-            emitted.append(replace(item, stable=True, stable_frames=track["count"],
-                                   confidence=confidence))
+            shift_x = float(track["x"]) - point[0]
+            shift_y = float(track["y"]) - point[1]
+            circle_x, circle_y = item.circle_center_px
+            emitted.append(replace(
+                item, stable=True, stable_frames=track["count"], confidence=confidence,
+                center_x_px=item.center_x_px + shift_x, center_y_px=item.center_y_px + shift_y,
+                reference_x_px=float(track["x"]), reference_y_px=float(track["y"]),
+                circle_x_px=circle_x + shift_x, circle_y_px=circle_y + shift_y,
+                track_id=int(track["id"]),
+            ))
         self._tracks = next_tracks
         return emitted
 
-    def detect(self, frame) -> list[DetectedObject]:
+    def detect(self, frame, colors=None, motion_regions=None) -> list[DetectedObject]:
         cv2 = self.cv2
-        hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
-        valid_mask = self._valid_mask(frame.shape)
-        minimum = float(self._config.get("min_area_px", self._config.get("min_object_area_px", 900)))
-        maximum = float(self._config.get("max_area_px", float("inf")))
+        view, scale = self._detection_view(frame)
+        factor = 1.0 / scale
+        area_scale = scale * scale
+        hsv = cv2.cvtColor(view, cv2.COLOR_BGR2HSV)
+        valid_mask = self._valid_mask(view.shape)
+        search = search_mask(
+            view.shape, scale, motion_regions,
+            [(track["x"], track["y"], 120.0) for track in self._tracks],
+            cv2,
+        )
+        minimum = float(self._config.get("min_area_px", self._config.get("min_object_area_px", 900))) * area_scale
+        maximum = float(self._config.get("max_area_px", float("inf"))) * area_scale
         min_aspect = float(self._config.get("min_aspect_ratio", 0.55))
         max_aspect = float(self._config.get("max_aspect_ratio", 1.80))
         min_solidity = float(self._config.get("min_solidity", 0.75))
         min_extent = float(self._config.get("min_extent", 0.45))
-        kernel_size = max(1, int(self._config.get("morphology_kernel_px", 5)))
+        kernel_size = max(1, int(round(int(self._config.get("morphology_kernel_px", 5)) * scale)))
         if kernel_size % 2 == 0:
             kernel_size += 1
         kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (kernel_size, kernel_size))
+        chosen = MATERIAL_COLORS if not colors else tuple(
+            color for color in colors if color in MATERIAL_COLORS)
         objects: list[DetectedObject] = []
-        for color in MATERIAL_COLORS:
+        for color in chosen:
             mask = None
             for bounds in self._hsv_colors[color]:
                 h1, s1, v1, h2, s2, v2 = (int(value) for value in bounds)
@@ -206,6 +242,8 @@ class ObjectDetector:
             if mask is None:
                 continue
             mask = cv2.bitwise_and(mask, valid_mask)
+            if search is not None:
+                mask = cv2.bitwise_and(mask, search)
             mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
             mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
             contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
@@ -238,15 +276,31 @@ class ObjectDetector:
                           moments["m01"] / moments["m00"])
                 reference = self._reference_point(contour, (x, y, box_width, box_height), center)
                 circle_center, _radius = cv2.minEnclosingCircle(contour)
-                points = tuple((int(point[0][0]), int(point[0][1])) for point in contour)
+                points = tuple((int(round(point[0][0] * factor)), int(round(point[0][1] * factor)))
+                               for point in contour)
                 objects.append(DetectedObject(
-                    color=color, center_x_px=center[0], center_y_px=center[1],
-                    area_px=area, bbox=(x, y, box_width, box_height), contour=points,
+                    color=color, center_x_px=center[0] * factor, center_y_px=center[1] * factor,
+                    area_px=area / area_scale,
+                    bbox=(int(round(x * factor)), int(round(y * factor)),
+                          int(round(box_width * factor)), int(round(box_height * factor))),
+                    contour=points,
                     aspect_ratio=aspect, solidity=solidity, extent=extent,
-                    reference_x_px=reference[0], reference_y_px=reference[1],
-                    circle_x_px=float(circle_center[0]), circle_y_px=float(circle_center[1]),
+                    reference_x_px=reference[0] * factor, reference_y_px=reference[1] * factor,
+                    circle_x_px=float(circle_center[0]) * factor,
+                    circle_y_px=float(circle_center[1]) * factor,
                 ))
-        return self._stabilize(objects, frame.shape)
+        return self._stabilize(objects, frame.shape, motion_regions)
+
+    def _detection_view(self, frame):
+        """宽画面先缩小再分割。返回检测图和相对原图的缩放。"""
+        cv2 = self.cv2
+        _height, width = frame.shape[:2]
+        limit = int(self._config.get("detect_max_width_px", 640))
+        if limit <= 0 or width <= limit:
+            return frame, 1.0
+        scale = limit / float(width)
+        size = (limit, max(1, int(round(frame.shape[0] * scale))))
+        return cv2.resize(frame, size, interpolation=cv2.INTER_AREA), scale
 
     @staticmethod
     def best_target(objects: list[DetectedObject], color: str,
@@ -279,7 +333,8 @@ def draw_shape_segments(frame, objects: list[DetectedObject], target: DetectedOb
     if target is not None:
         center = (round(target.circle_center_px[0]), round(target.circle_center_px[1]))
         cv2.circle(output, center, 10, (255, 255, 255), 2)
-        cv2.putText(output, "SEND", (center[0] + 12, max(18, center[1] - 12)),
+        cv2.putText(output, f"#{target.track_id} SEND" if target.track_id else "SEND",
+                    (center[0] + 12, max(18, center[1] - 12)),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2, cv2.LINE_AA)
     return output
 
@@ -330,7 +385,7 @@ def draw_object_debug_frame(frame, objects: list[DetectedObject], fps: float,
         cv2.drawMarker(annotated, reference, (255, 255, 255), cv2.MARKER_TILTED_CROSS, 16, 2)
         origin = image_origin_px(item.circle_center_px[0], item.circle_center_px[1],
                                  width, height)
-        label = (f"{item.color} circle=({origin[0]},{origin[1]}) "
+        label = (f"#{item.track_id or '?'} {item.color} circle=({origin[0]},{origin[1]}) "
                  f"A={item.area_px:.0f} stable={item.stable_frames} "
                  f"Q={item.confidence:.2f}")
         cv2.putText(annotated, label, (max(0, reference[0] - 80), max(18, reference[1] - 18)),
@@ -400,8 +455,14 @@ class CameraVision:
         text, _, _ = self._qr.detectAndDecode(frame)
         return text.strip() if text else None
 
-    def detect_objects(self, frame) -> list[DetectedObject]:
-        return self._detector.detect(frame)
+    def detect_objects(self, frame, colors=None, motion_regions=None) -> list[DetectedObject]:
+        return self._detector.detect(frame, colors, motion_regions)
+
+    def clear_tracks(self) -> None:
+        self._detector.clear_tracks()
+
+    def set_detect_width(self, width: int) -> None:
+        self._detector.set_detect_width(width)
 
     best_target = staticmethod(ObjectDetector.best_target)
 

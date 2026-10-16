@@ -102,6 +102,4 @@ class FrameRectifier:
             raise ValueError("camera_matrix 和 plane_homography 必须是 3x3")
         rectified = cv2.undistort(frame, matrix, distortion)
         height, width = rectified.shape[:2]
-        output_size = self._raw.get("output_size", [width, height])
-        return cv2.warpPerspective(rectified, homography,
-                                   (int(output_size[0]), int(output_size[1])))
+        return cv2.warpPerspective(rectified, homography, (width, height))

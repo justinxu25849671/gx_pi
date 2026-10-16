@@ -31,6 +31,7 @@ class DetectedObject:
     confidence: float = 0.0
     circle_x_px: float | None = None
     circle_y_px: float | None = None
+    track_id: int | None = None
 
     @property
     def circle_center_px(self) -> tuple[float, float]:

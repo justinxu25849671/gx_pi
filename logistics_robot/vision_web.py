@@ -12,12 +12,13 @@ from typing import Any
 from urllib.parse import urlsplit
 
 from .calibration import FrameRectifier
+from .material_learn import crop_patch, hsv_bounds_from_bgr, save_config
 from .model import DetectedObject
+from .motion_gate import MotionGate
 from .ring_detection import RingCandidate, RingDetector, draw_ring_debug
+from .stream_tuner import StreamTuner
 from .vision import CameraVision, draw_object_debug_frame, draw_shape_segments, image_origin_px
-from .vision_locate import (
-    parse_locate_color, retain_hsv_color, select_upper_circle, upper_circle_coordinate,
-)
+from .vision_locate import parse_locate_color, select_upper_circle, upper_circle_coordinate
 
 
 LOG = logging.getLogger(__name__)
@@ -37,6 +38,8 @@ class FrameHub:
         }
         self._generation = 0
         self._locate_color = ""
+        self._bgr = None
+        self._reset_tracks = False
         self.closed = False
 
     def publish(self, jpeg: bytes, status: dict[str, Any]) -> None:
@@ -69,6 +72,32 @@ class FrameHub:
                 return None
             return self._generation, self._jpeg
 
+    def remember_frame(self, frame) -> None:
+        with self._lock:
+            self._bgr = frame
+
+    def consume_track_reset(self) -> bool:
+        with self._lock:
+            reset = self._reset_tracks
+            self._reset_tracks = False
+            return reset
+
+    def learn_color(self, color: str, x: float, y: float, config: dict[str, Any],
+                    config_path: Path | None) -> list[list[int]]:
+        """按点击位置学习颜色，并写回正在使用的配置。"""
+        with self._lock:
+            frame = self._bgr
+            if frame is None:
+                raise RuntimeError("画面尚未就绪")
+            patch = crop_patch(frame, x, y)
+        bounds = hsv_bounds_from_bgr(patch)
+        config["hsv_colors"][color] = bounds
+        with self._lock:
+            self._reset_tracks = True
+        if config_path is not None:
+            save_config(config_path, config)
+        return bounds
+
     def close(self) -> None:
         with self._lock:
             self.closed = True
@@ -79,7 +108,9 @@ def vision_status(frame_shape, fps: float, camera_index: int, mode: str,
                   objects: list[DetectedObject], rings: list[RingCandidate],
                   error: str = "", locate_color: str = "",
                   target: DetectedObject | None = None,
-                  send_state: str = "idle") -> dict[str, Any]:
+                  send_state: str = "idle",
+                  tune: dict[str, Any] | None = None,
+                  motion: str = "update") -> dict[str, Any]:
     """整理网页侧栏使用的画面中心坐标。"""
     height, width = int(frame_shape[0]), int(frame_shape[1])
     object_rows = []
@@ -88,6 +119,7 @@ def vision_status(frame_shape, fps: float, camera_index: int, mode: str,
                                      width, height)
         object_rows.append({
             "color": item.color, "x": x_px, "y": y_px,
+            "track_id": item.track_id,
             "stable": bool(item.stable), "stable_frames": int(item.stable_frames),
             "quality": round(float(item.confidence), 3),
         })
@@ -95,7 +127,7 @@ def vision_status(frame_shape, fps: float, camera_index: int, mode: str,
     for item in rings:
         x_px, y_px = image_origin_px(item.center_x_px, item.center_y_px, width, height)
         ring_rows.append({
-            "position": item.position, "x": x_px, "y": y_px,
+            "position": item.position, "track_id": item.track_id, "x": x_px, "y": y_px,
             "radius_px": round(float(item.radius_px), 2),
             "valid": bool(item.valid), "stable": bool(item.stable),
             "stable_frames": int(item.stable_frames),
@@ -105,10 +137,11 @@ def vision_status(frame_shape, fps: float, camera_index: int, mode: str,
     return {
         "ok": not error, "error": error, "fps": round(float(fps), 2),
         "width": width, "height": height, "camera_index": int(camera_index),
-        "mode": mode, "locate_color": locate_color,
+        "mode": mode, "locate_color": locate_color, "motion": motion,
         "objects": object_rows, "rings": ring_rows,
         "target": _target_row(target, width, height),
         "send_state": send_state,
+        "tune": tune or {},
     }
 
 
@@ -118,7 +151,7 @@ def _target_row(target: DetectedObject | None, width: int, height: int) -> dict[
     x_px, y_px = image_origin_px(target.circle_center_px[0], target.circle_center_px[1],
                                  width, height)
     return {
-        "color": target.color, "x": x_px, "y": y_px,
+        "color": target.color, "track_id": target.track_id, "x": x_px, "y": y_px,
         "stable_frames": int(target.stable_frames),
     }
 
@@ -208,6 +241,29 @@ def annotate_vision_frame(frame, objects: list[DetectedObject], rings: list[Ring
     return annotated
 
 
+def preview_frame(frame, preview_width: int):
+    """网页预览可以比检测图更窄，坐标仍按原始画面计算。"""
+    import cv2
+    height, width = frame.shape[:2]
+    if preview_width <= 0 or width <= preview_width:
+        return frame
+    scale = preview_width / float(width)
+    size = (preview_width, max(1, int(round(height * scale))))
+    return cv2.resize(frame, size, interpolation=cv2.INTER_AREA)
+
+
+def render_preview(frame, objects, rings, fps, camera_index, camera_config, mode,
+                   preview_width, jpeg_quality, target, previous_jpeg: bytes | None,
+                   redraw: bool) -> bytes:
+    """有运动才重画预览。静止时沿用上一张 JPEG，坐标仍按当前检测结果更新。"""
+    if not redraw and previous_jpeg:
+        return previous_jpeg
+    segmented = draw_shape_segments(frame, objects, target)
+    annotated = annotate_vision_frame(segmented, objects, rings, fps, camera_index,
+                                      camera_config, mode)
+    return encode_jpeg(preview_frame(annotated, preview_width), jpeg_quality)
+
+
 def encode_jpeg(frame, quality: int = 80) -> bytes:
     import cv2
     ok, encoded = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), int(quality)])
@@ -231,11 +287,13 @@ def _error_frame(message: str):
 
 
 class VisionWebServer:
-    """只读 HTTP 服务：页面、状态、单帧和 MJPEG。"""
+    """页面、状态、单帧、MJPEG，以及点击学习物料颜色。"""
 
-    def __init__(self, hub: FrameHub, host: str, port: int) -> None:
+    def __init__(self, hub: FrameHub, host: str, port: int,
+                 config: dict[str, Any] | None = None,
+                 config_path: Path | None = None) -> None:
         html = _HTML_PATH.read_bytes()
-        handler = _handler(hub, html)
+        handler = _handler(hub, html, config, config_path)
         self._httpd = ThreadingHTTPServer((host, port), handler)
         self._httpd.daemon_threads = True
         self.host = host
@@ -254,7 +312,8 @@ class VisionWebServer:
         self._httpd.server_close()
 
 
-def _handler(hub: FrameHub, html: bytes):
+def _handler(hub: FrameHub, html: bytes, config: dict[str, Any] | None,
+             config_path: Path | None):
     class Handler(BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
 
@@ -279,21 +338,51 @@ def _handler(hub: FrameHub, html: bytes):
 
         def do_POST(self) -> None:  # noqa: N802
             path = urlsplit(self.path).path
-            if path != "/color":
-                self.send_error(404)
-                return
             length = int(self.headers.get("Content-Length", "0") or 0)
             raw = self.rfile.read(length) if length else b""
             try:
                 payload = json.loads(raw.decode("utf-8") or "{}")
+            except (json.JSONDecodeError, UnicodeError):
+                body = json.dumps({"ok": False, "error": "请求无效"}, ensure_ascii=False).encode("utf-8")
+                self._send(400, "application/json; charset=utf-8", body)
+                return
+            if path == "/color":
+                self._set_color(payload)
+            elif path == "/learn":
+                self._learn(payload)
+            else:
+                self.send_error(404)
+
+        def _set_color(self, payload: dict[str, Any]) -> None:
+            try:
                 requested = str(payload.get("color", "")).strip()
                 color = parse_locate_color(requested) if requested else ""
-            except (ValueError, json.JSONDecodeError, UnicodeError):
+            except ValueError:
                 body = json.dumps({"ok": False, "error": "颜色无效"}, ensure_ascii=False).encode("utf-8")
                 self._send(400, "application/json; charset=utf-8", body)
                 return
             hub.set_locate_color(color)
             body = json.dumps({"ok": True, "color": color}, ensure_ascii=False).encode("utf-8")
+            self._send(200, "application/json; charset=utf-8", body)
+
+        def _learn(self, payload: dict[str, Any]) -> None:
+            try:
+                color = parse_locate_color(str(payload.get("color", "")))
+                if config is None or "hsv_colors" not in config:
+                    raise RuntimeError("没有可写入的颜色配置")
+                bounds = hub.learn_color(color, float(payload["x"]), float(payload["y"]),
+                                         config, config_path)
+            except (KeyError, TypeError, ValueError) as exc:
+                message = str(exc) or "采样点无效"
+                body = json.dumps({"ok": False, "error": message}, ensure_ascii=False).encode("utf-8")
+                self._send(400, "application/json; charset=utf-8", body)
+                return
+            except RuntimeError as exc:
+                body = json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False).encode("utf-8")
+                self._send(409, "application/json; charset=utf-8", body)
+                return
+            body = json.dumps({"ok": True, "color": color, "bounds": bounds},
+                              ensure_ascii=False).encode("utf-8")
             self._send(200, "application/json; charset=utf-8", body)
 
         def _send(self, status: int, content_type: str, body: bytes) -> None:
@@ -344,6 +433,13 @@ def _camera_loop(config: dict[str, Any], camera_index: int | None, mode: str,
         ring_detector = RingDetector(config["ring_detection"], vision.cv2) if mode != "objects" else None
         rectifier = FrameRectifier(config["vision_calibration"].get("camera", {}), vision.cv2)
         sender = _CircleSender(config.get("serial", {}))
+        tuner = StreamTuner(float(config.get("vision_stream", {}).get("target_fps", 12)))
+        motion_gate = MotionGate()
+        cached_objects: list[DetectedObject] = []
+        cached_rings: list[RingCandidate] = []
+        have_cache = False
+        force_detect = True
+        last_jpeg: bytes | None = None
         active_color = hub.get_locate_color()
         previous = time.perf_counter()
         while not stop.is_set():
@@ -351,28 +447,52 @@ def _camera_loop(config: dict[str, Any], camera_index: int | None, mode: str,
             if ring_detector is not None and color != active_color:
                 ring_detector = RingDetector(config["ring_detection"], vision.cv2)
                 active_color = color
+                force_detect = True
             frame = rectifier.apply(vision.read())
+            hub.remember_frame(frame)
+            if hub.consume_track_reset():
+                vision.clear_tracks()
+                force_detect = True
             now = time.perf_counter()
             elapsed = now - previous
             previous = now
             fps = 1.0 / elapsed if elapsed > 0 else 0.0
-            objects = vision.detect_objects(frame) if mode != "rings" else []
-            ring_frame = frame
-            if color and ring_detector is not None:
-                ring_frame = retain_hsv_color(frame, color, config["hsv_colors"], vision.cv2)
-            if color:
-                objects = [item for item in objects if item.color == color]
-            rings = ring_detector.detect(ring_frame) if ring_detector else []
+            level = tuner.observe(fps)
+            vision.set_detect_width(level.detect_width)
+            if ring_detector is not None:
+                ring_detector.set_detect_width(level.detect_width)
+            sample = motion_gate.update(frame)
+            if force_detect or not sample.reuse or not have_cache:
+                regions = None if force_detect else sample.regions
+                objects = (vision.detect_objects(frame, (color,) if color else None, regions)
+                           if mode != "rings" else [])
+                rings = (ring_detector.detect(frame, regions, color or None, config["hsv_colors"])
+                         if ring_detector else [])
+                cached_objects, cached_rings = objects, rings
+                have_cache = True
+                force_detect = False
+                motion_name = "update"
+            else:
+                objects, rings = cached_objects, cached_rings
+                motion_name = "hold"
             target = select_upper_circle(objects) if color else None
             point = upper_circle_coordinate(objects, frame.shape[1], frame.shape[0]) if color else None
             send_state = sender.update(color, point)
-            segmented = draw_shape_segments(frame, objects, target)
-            annotated = annotate_vision_frame(segmented, objects, rings, fps, selected_index,
-                                              camera_config, mode)
-            status = vision_status(annotated.shape, fps, selected_index, mode, objects, rings,
+            tune = {
+                "detect_width": level.detect_width,
+                "preview_width": level.preview_width,
+                "jpeg_quality": level.jpeg_quality,
+                "target_fps": tuner.target_fps,
+            }
+            last_jpeg = render_preview(
+                frame, objects, rings, fps, selected_index, camera_config, mode,
+                level.preview_width, level.jpeg_quality, target, last_jpeg,
+                motion_name != "hold",
+            )
+            status = vision_status(frame.shape, fps, selected_index, mode, objects, rings,
                                    sender.error if send_state == "error" else "",
-                                   color, target, send_state)
-            hub.publish(encode_jpeg(annotated), status)
+                                   color, target, send_state, tune, motion_name)
+            hub.publish(last_jpeg, status)
     except Exception as exc:
         LOG.error("视觉网页相机中断：%s", exc)
         try:
@@ -391,14 +511,14 @@ def _camera_loop(config: dict[str, Any], camera_index: int | None, mode: str,
 
 
 def run_vision_web(config: dict[str, Any], camera_index: int | None, mode: str,
-                   host: str, port: int) -> int:
+                   host: str, port: int, config_path: Path | None = None) -> int:
     """启动浏览器预览。未选择颜色时不创建串口；选定颜色后才发送上层圆心。"""
     if not 1 <= int(port) <= 65535:
         LOG.error("网页端口必须在 1..65535")
         return 2
     hub = FrameHub()
     try:
-        server = VisionWebServer(hub, host, int(port))
+        server = VisionWebServer(hub, host, int(port), config, config_path)
     except OSError as exc:
         LOG.error("无法监听 %s:%s：%s", host, port, exc)
         return 1

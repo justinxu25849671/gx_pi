@@ -50,6 +50,7 @@
       height: auto;
       background: #f7f8fa;
       border-radius: 8px;
+      cursor: crosshair;
     }
     .panel { padding: 14px 16px 18px; }
     h2 { margin: 14px 0 8px; font-size: 15px; }
@@ -115,6 +116,8 @@
         <button type="button" data-color="blue">蓝</button>
         <button type="button" data-color="green">绿</button>
       </div>
+      <h2>学习物料</h2>
+      <div class="meta" id="learn">先点选红、黄、蓝或绿，再在画面上点一下该物料。学到的颜色会立刻用于识别，并写入配置。</div>
       <div class="error" id="error"></div>
       <h2>发送目标</h2>
       <div class="meta" id="target">未选择颜色，不发送</div>
@@ -137,6 +140,10 @@
       error: "发送失败",
     };
     const objects = document.getElementById("objects");
+    const learnBox = document.getElementById("learn");
+    const view = document.getElementById("view");
+    let frameSize = { width: 0, height: 0 };
+    let selectedColor = "";
     const colorButtons = document.querySelectorAll("#colors button");
 
     function markColor(color) {
@@ -153,6 +160,7 @@
       });
       if (!response.ok) throw new Error("颜色无效");
       markColor(color);
+      selectedColor = color;
     }
 
     function list(node, items, emptyText, render) {
@@ -185,12 +193,19 @@
       try {
         const response = await fetch("/status.json", { cache: "no-store" });
         const status = await response.json();
-        meta.textContent = `相机 ${status.camera_index} · ${status.width}×${status.height} · ${Number(status.fps).toFixed(1)} FPS · ${status.mode}`;
-        markColor(status.locate_color || "");
+        const tune = status.tune || {};
+        const auto = tune.detect_width
+          ? ` · 自动 检测${tune.detect_width} 预览${tune.preview_width} JPEG ${tune.jpeg_quality}`
+          : "";
+        const motionText = status.motion === "hold" ? " · 静止少算" : "";
+        meta.textContent = `相机 ${status.camera_index} · ${status.width}×${status.height} · ${Number(status.fps).toFixed(1)} FPS · ${status.mode}${auto}${motionText}`;
+        frameSize = { width: Number(status.width) || 0, height: Number(status.height) || 0 };
+        selectedColor = status.locate_color || "";
+        markColor(selectedColor);
         const target = status.target;
         const state = sendText[status.send_state] || "未发送";
         targetBox.textContent = target
-          ? `${target.color} 上层圆形 xy = (${target.x}, ${target.y}) · ${state}`
+          ? `#${target.track_id ?? "?"} ${target.color} 上层圆形 xy = (${target.x}, ${target.y}) · ${state}`
           : state;
         if (status.error) {
           errorBox.style.display = "block";
@@ -200,12 +215,12 @@
           errorBox.textContent = "";
         }
         list(rings, status.rings, "当前没有圆环", (item) => row(
-          `环 ${item.position == null ? "未绑定" : item.position} · 半径 ${item.radius_px.toFixed(1)} px`,
+          `#${item.track_id ?? "?"} 环 ${item.position == null ? "未绑定" : item.position} · 半径 ${item.radius_px.toFixed(1)} px`,
           `xy = (${item.x}, ${item.y})`,
           { ok: item.valid && item.stable, text: item.reason || (item.stable ? "稳定" : "未稳定") }
         ));
         list(objects, status.objects, "当前没有物料", (item) => row(
-          item.color,
+          `#${item.track_id ?? "?"} ${item.color}`,
           `xy = (${item.x}, ${item.y})`,
           { ok: item.stable, text: item.stable ? `稳定 ${item.stable_frames} 帧` : `未稳定 ${item.stable_frames} 帧` }
         ));
@@ -221,6 +236,31 @@
       setColor(button.dataset.color || "").catch(() => {
         errorBox.style.display = "block";
         errorBox.textContent = "识别颜色切换失败";
+      });
+    });
+
+    view.addEventListener("click", (event) => {
+      if (!selectedColor) {
+        learnBox.textContent = "请先选择要学习的颜色";
+        return;
+      }
+      if (!frameSize.width || !frameSize.height) {
+        learnBox.textContent = "画面尚未就绪";
+        return;
+      }
+      const rect = view.getBoundingClientRect();
+      const x = Math.round((event.clientX - rect.left) / rect.width * frameSize.width);
+      const y = Math.round((event.clientY - rect.top) / rect.height * frameSize.height);
+      fetch("/learn", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ color: selectedColor, x, y }),
+      }).then(async (response) => {
+        const result = await response.json();
+        if (!response.ok) throw new Error(result.error || "学习失败");
+        learnBox.textContent = `已学习${selectedColor}，识别范围已更新`;
+      }).catch((error) => {
+        learnBox.textContent = error.message || "学习失败";
       });
     });
 

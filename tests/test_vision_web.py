@@ -20,7 +20,7 @@ from logistics_robot.model import DetectedObject
 from logistics_robot.ring_detection import RingCandidate
 from logistics_robot.vision_web import (
     FrameHub, VisionWebServer, _CircleSender, annotate_vision_frame, encode_jpeg,
-    vision_status,
+    render_preview, vision_status,
 )
 
 
@@ -30,19 +30,31 @@ class VisionWebTests(unittest.TestCase):
         frame = np.zeros((120, 160, 3), dtype=np.uint8)
         original = frame.copy()
         material = DetectedObject("red", 90, 40, 1000, stable=True, stable_frames=4,
-                                  confidence=0.91, circle_x_px=100, circle_y_px=40)
+                                  confidence=0.91, circle_x_px=100, circle_y_px=40, track_id=3)
         ring = RingCandidate(80, 60, 18, 0.8, 1.2, 3, position=2, valid=True,
-                             stable=True, stable_frames=4, quality=0.88)
+                             stable=True, stable_frames=4, quality=0.88, track_id=7)
         status = vision_status(frame.shape, 12.5, 0, "combined", [material], [ring])
         self.assertEqual(status["objects"][0]["x"], 20)
         self.assertEqual(status["objects"][0]["y"], -20)
         self.assertEqual((status["rings"][0]["x"], status["rings"][0]["y"],
                           status["rings"][0]["position"]), (0, 0, 2))
+        self.assertEqual(status["objects"][0]["track_id"], 3)
+        self.assertEqual(status["rings"][0]["track_id"], 7)
+        self.assertEqual(status["motion"], "update")
         annotated = annotate_vision_frame(frame, [material], [ring], 12.5, 0, {}, "combined")
         self.assertEqual(annotated.shape, frame.shape)
         self.assertTrue(np.array_equal(frame, original))
         self.assertFalse(np.array_equal(annotated, original))
         self.assertTrue(encode_jpeg(annotated).startswith(b"\xff\xd8"))
+
+    def test_still_preview_reuses_the_previous_jpeg(self):
+        frame = np.zeros((48, 64, 3), dtype=np.uint8)
+        first = render_preview(frame, [], [], 10.0, 0, {}, "combined", 64, 70, None, None, True)
+        frame[:] = (0, 0, 255)
+        held = render_preview(frame, [], [], 30.0, 0, {}, "combined", 32, 40, None, first, False)
+        self.assertEqual(held, first)
+        redrawn = render_preview(frame, [], [], 30.0, 0, {}, "combined", 64, 70, None, first, True)
+        self.assertNotEqual(redrawn, first)
 
     def test_http_serves_page_snapshot_status_and_stream(self):
         frame = np.zeros((48, 64, 3), dtype=np.uint8)
@@ -62,6 +74,9 @@ class VisionWebTests(unittest.TestCase):
             self.assertIn("/stream.mjpg", page)
             self.assertIn("圆环圆心", page)
             self.assertIn("发送目标", page)
+            self.assertIn("学习物料", page)
+            self.assertIn("静止少算", page)
+            self.assertIn("track_id", page)
             self.assertIn("识别颜色", page)
             self.assertIn('data-color="red"', page)
             with urlopen(base + "/snapshot.jpg", timeout=2) as response:
@@ -121,7 +136,7 @@ class VisionWebTests(unittest.TestCase):
              patch.object(sys, "argv", ["main.py", "--vision-web", "--vision-web-port", "8091",
                                         "--vision-mode", "rings"]):
             self.assertEqual(app.main(), 0)
-        runner.assert_called_once_with(config, None, "rings", "0.0.0.0", 8091)
+        runner.assert_called_once_with(config, None, "rings", "0.0.0.0", 8091, app._default_config_path())
         serial_link.assert_not_called()
 
     def test_sender_waits_without_serial_and_sends_locked_circle(self):

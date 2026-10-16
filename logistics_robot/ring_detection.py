@@ -6,6 +6,7 @@ from dataclasses import dataclass, replace
 import math
 from typing import Any, Mapping
 
+from .motion_gate import point_in_regions, search_mask
 from .vision import image_origin_px
 
 
@@ -24,6 +25,7 @@ class RingCandidate:
     quality: float = 0.0
     reason: str = ""
     geometry_error_ratio: float = 0.0
+    track_id: int | None = None
 
 
 def _size_ratio(new: float, old: float) -> float:
@@ -59,6 +61,11 @@ class RingDetector:
         self._tracks: dict[int, tuple[float, float, int]] = {}
         self._observations: list[dict[str, float | int | None]] = []
         self._pixel_scale = 1.0
+        self._next_track_id = 1
+
+    def set_detect_width(self, width: int) -> None:
+        """运行中改找圆用的图像宽度。"""
+        self._config["detect_max_width_px"] = max(160, int(width))
 
     def _masks(self, shape) -> tuple[Any, Any]:
         cv2 = self.cv2
@@ -145,6 +152,11 @@ class RingDetector:
                 continue
             if min(box_width, box_height) / max(box_width, box_height) < min_axis_ratio:
                 continue
+            radius_est = (box_width + box_height) / 4.0
+            if not minimum <= radius_est <= maximum:
+                continue
+            if cv2.arcLength(contour, False) / max(2.0 * math.pi * radius_est, 1.0) < min_arc:
+                continue
             try:
                 (x, y), (axis_a, axis_b), _ = cv2.fitEllipse(contour)
             except cv2.error:
@@ -157,6 +169,8 @@ class RingDetector:
             coverage = cv2.arcLength(contour, False) / max(2.0 * math.pi * radius, 1.0)
             if coverage >= min_arc:
                 proposals.append((x, y, radius))
+        if proposals:
+            return proposals
         min_radius = max(1, int(round(minimum)))
         max_radius = max(min_radius + 1, int(round(maximum)))
         circles = cv2.HoughCircles(
@@ -209,8 +223,9 @@ class RingDetector:
                 continue
             previous = self._tracks.get(item.position)
             count = 1
+            gate = max(tolerance, float(self._config.get("track_motion_px", 160.0)))
             if previous and math.hypot(item.center_x_px - previous[0],
-                                       item.center_y_px - previous[1]) <= tolerance:
+                                       item.center_y_px - previous[1]) <= gate:
                 count = previous[2] + 1
             self._tracks[item.position] = (item.center_x_px, item.center_y_px, count)
             output.append(replace(item, stable=count >= required, stable_frames=count))
@@ -223,20 +238,25 @@ class RingDetector:
         """把全分辨率像素阈值换到当前检测图。"""
         return float(self._config.get(name, default)) * self._pixel_scale
 
-    def _detection_view(self, frame, valid_mask, excluded):
-        """缩小宽画面后再找圆。返回灰度图、遮挡图和相对原图的缩放。"""
+    def _detection_view(self, frame, valid_mask, excluded, color=None, hsv_colors=None):
+        """先缩小，再按颜色过滤，最后才转灰度。返回灰度图、遮挡图和相对原图的缩放。"""
         cv2 = self.cv2
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        view = frame
+        _height, width = frame.shape[:2]
+        limit = int(self._config.get("detect_max_width_px", 640))
+        scale = 1.0
+        if 0 < limit < width:
+            scale = limit / float(width)
+            size = (limit, max(1, int(round(frame.shape[0] * scale))))
+            view = cv2.resize(frame, size, interpolation=cv2.INTER_AREA)
+            valid_mask = cv2.resize(valid_mask, size, interpolation=cv2.INTER_NEAREST)
+            excluded = cv2.resize(excluded, size, interpolation=cv2.INTER_NEAREST)
+        if color and hsv_colors is not None:
+            from .vision_locate import retain_hsv_color
+            view = retain_hsv_color(view, color, hsv_colors, cv2)
+        gray = cv2.cvtColor(view, cv2.COLOR_BGR2GRAY)
         gray = cv2.GaussianBlur(gray, (5, 5), 1.2)
         gray[valid_mask == 0] = 0
-        _height, width = gray.shape[:2]
-        limit = int(self._config.get("detect_max_width_px", 640))
-        if limit <= 0 or width <= limit:
-            return gray, excluded, 1.0
-        scale = limit / float(width)
-        size = (limit, max(1, int(round(gray.shape[0] * scale))))
-        gray = cv2.resize(gray, size, interpolation=cv2.INTER_AREA)
-        excluded = cv2.resize(excluded, size, interpolation=cv2.INTER_NEAREST)
         return gray, excluded, scale
 
     def _suppress_duplicates(self, candidates: list[RingCandidate]) -> list[RingCandidate]:
@@ -264,16 +284,25 @@ class RingDetector:
                         fit_error_px=item.fit_error_px * factor)
                 for item in candidates]
 
-    def detect(self, frame) -> list[RingCandidate]:
-        """检测画面中的圆。不按直径、圆弧完整度或环位编号剔除。"""
+    def detect(self, frame, motion_regions=None, color: str | None = None,
+               hsv_colors=None) -> list[RingCandidate]:
+        """检测画面中的圆。颜色过滤在缩小后的画面上做，坐标再换回原图。"""
         cv2 = self.cv2
         valid_mask, excluded = self._masks(frame.shape)
-        gray, excluded, scale = self._detection_view(frame, valid_mask, excluded)
+        gray, excluded, scale = self._detection_view(
+            frame, valid_mask, excluded, color, hsv_colors)
         self._pixel_scale = scale
         edges = cv2.Canny(gray, int(self._config.get("canny_low", 60)),
                           int(self._config.get("canny_high", 160)))
         edges[cv2.resize(valid_mask, (gray.shape[1], gray.shape[0]),
                          interpolation=cv2.INTER_NEAREST) == 0] = 0
+        search = search_mask(
+            gray.shape, scale, motion_regions,
+            [(track["x"], track["y"], track["radius"]) for track in self._observations],
+            cv2,
+        )
+        if search is not None:
+            edges = cv2.bitwise_and(edges, search)
         raw = self._circle_proposals(gray, edges)
         grouped = self._suppress_duplicates(self._group_concentric(raw, edges, excluded))
         result = self._bind_positions(self._to_full_resolution(grouped, scale))
@@ -281,19 +310,24 @@ class RingDetector:
         if not bool(self._config.get("calibrated", False)):
             result = [replace(item, valid=False, stable=False,
                               reason="环检测参数尚未用实物标定") for item in result]
-        return self._persist(self._stabilize(result))
+        return self._persist(self._stabilize(result), motion_regions)
 
-    def _persist(self, candidates: list[RingCandidate]) -> list[RingCandidate]:
-        """连续出现才输出。半径突然变大或变小的那一帧不输出。"""
-        required = int(self._config.get("stable_frames", 4))
+    def _persist(self, candidates: list[RingCandidate], motion_regions=None) -> list[RingCandidate]:
+        """按上一帧速度接着追。圆环可以移动；短暂丢失时沿运动方向保持。"""
+        required = int(self._config.get("stable_frames", 1))
         tolerance = float(self._config.get("stable_center_tolerance_px", 5.0))
+        motion = float(self._config.get("track_motion_px", 160.0))
+        hold = int(self._config.get("track_hold_frames", 2))
         max_ratio = float(self._config.get("max_radius_change_ratio", 1.45))
+        gate = max(tolerance, motion)
         pairs = []
         for detection_index, item in enumerate(candidates):
             for track_index, track in enumerate(self._observations):
-                distance = math.hypot(item.center_x_px - float(track["x"]),
-                                       item.center_y_px - float(track["y"]))
-                if distance <= tolerance:
+                predicted_x = float(track["x"]) + float(track.get("vx") or 0)
+                predicted_y = float(track["y"]) + float(track.get("vy") or 0)
+                distance = math.hypot(item.center_x_px - predicted_x,
+                                       item.center_y_px - predicted_y)
+                if distance <= gate:
                     pairs.append((distance, detection_index, track_index))
         pairs.sort()
         used_detections: set[int] = set()
@@ -310,15 +344,30 @@ class RingDetector:
         for detection_index, item in enumerate(candidates):
             track = None if detection_index not in matches else dict(self._observations[matches[detection_index]])
             if track is None:
+                if motion_regions is not None and not point_in_regions(
+                        item.center_x_px, item.center_y_px, motion_regions):
+                    continue
                 track = {
-                    "x": item.center_x_px, "y": item.center_y_px, "radius": item.radius_px,
-                    "count": 1, "pending_radius": None, "pending_count": 0,
+                    "id": self._next_track_id, "x": item.center_x_px, "y": item.center_y_px,
+                    "radius": item.radius_px, "vx": 0.0, "vy": 0.0, "count": 1, "miss": 0,
+                    "pending_radius": None, "pending_count": 0,
                 }
+                self._next_track_id += 1
                 next_tracks.append(track)
                 if required <= 1:
-                    emitted.append(replace(item, stable=True, stable_frames=1))
+                    emitted.append(replace(item, stable=True, stable_frames=1,
+                                           track_id=int(track["id"])))
                 continue
-            track["x"], track["y"] = item.center_x_px, item.center_y_px
+            alpha = min(1.0, max(0.05, float(self._config.get("track_smooth", 0.62))))
+            predicted_x = float(track["x"]) + float(track.get("vx") or 0)
+            predicted_y = float(track["y"]) + float(track.get("vy") or 0)
+            smooth_x = item.center_x_px * alpha + predicted_x * (1.0 - alpha)
+            smooth_y = item.center_y_px * alpha + predicted_y * (1.0 - alpha)
+            track["vx"] = smooth_x - float(track["x"])
+            track["vy"] = smooth_y - float(track["y"])
+            track["x"], track["y"] = smooth_x, smooth_y
+            track["miss"] = 0
+            item = replace(item, center_x_px=smooth_x, center_y_px=smooth_y)
             if _size_ratio(item.radius_px, float(track["radius"])) > max_ratio:
                 pending = track["pending_radius"]
                 if pending is not None and _size_ratio(item.radius_px, float(pending)) <= max_ratio:
@@ -335,14 +384,26 @@ class RingDetector:
                 track["pending_radius"] = None
                 track["pending_count"] = 0
             else:
-                track["radius"] = item.radius_px
+                track["radius"] = (item.radius_px * alpha + float(track["radius"]) * (1.0 - alpha))
                 track["count"] = int(track["count"]) + 1
                 track["pending_radius"] = None
                 track["pending_count"] = 0
+            item = replace(item, radius_px=float(track["radius"]))
             next_tracks.append(track)
             if int(track["count"]) < required:
                 continue
-            emitted.append(replace(item, stable=True, stable_frames=int(track["count"])))
+            emitted.append(replace(item, stable=True, stable_frames=int(track["count"]),
+                                   track_id=int(track["id"])))
+        for track_index, track in enumerate(self._observations):
+            if track_index in used_tracks:
+                continue
+            track = dict(track)
+            track["miss"] = int(track.get("miss") or 0) + 1
+            if int(track["miss"]) > hold:
+                continue
+            track["x"] = float(track["x"]) + float(track.get("vx") or 0)
+            track["y"] = float(track["y"]) + float(track.get("vy") or 0)
+            next_tracks.append(track)
         self._observations = next_tracks
         return emitted
 
@@ -365,7 +426,7 @@ def draw_ring_debug(frame, rings: list[RingCandidate]):
         origin = image_origin_px(item.center_x_px, item.center_y_px, width, height)
         cv2.circle(output, center, max(1, round(item.radius_px)), color, 2)
         cv2.drawMarker(output, center, color, cv2.MARKER_CROSS, 18, 2)
-        label = (f"ring={item.position or '?'} xy=({origin[0]},{origin[1]}) "
+        label = (f"#{item.track_id or '?'} ring={item.position or '?'} xy=({origin[0]},{origin[1]}) "
                  f"arc={item.visible_arc_ratio:.2f} err={item.fit_error_px:.1f} "
                  f"layers={item.concentric_layers} stable={item.stable_frames}")
         cv2.putText(output, label, (max(0, center[0] - round(item.radius_px)),

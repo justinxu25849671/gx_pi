@@ -72,6 +72,33 @@ class VisionLocateTests(unittest.TestCase):
         self.assertLess(abs(nearest.center_x_px - 80), 15)
         self.assertGreater(abs(nearest.center_x_px - 230), 40)
 
+    @unittest.skipIf(np is None, "未安装 numpy/OpenCV，无法运行颜色圆环测试")
+    def test_color_filter_uses_the_downscaled_frame(self):
+        import cv2
+        frame = np.zeros((300, 800, 3), dtype=np.uint8)
+        cv2.circle(frame, (180, 150), 48, (0, 0, 255), 8)
+        cv2.circle(frame, (620, 150), 48, (255, 80, 0), 8)
+        hsv = {
+            "red": [[0, 80, 80, 10, 255, 255], [170, 80, 80, 180, 255, 255]],
+            "yellow": [[18, 80, 80, 40, 255, 255]],
+            "blue": [[95, 80, 60, 130, 255, 255]],
+            "green": [[42, 70, 50, 85, 255, 255]],
+        }
+        detector = RingDetector({
+            "min_radius_px": 18, "max_radius_px": 80,
+            "min_visible_arc_ratio": 0.30, "hough_accumulator": 40,
+            "proposal_min_arc_ratio": 0.40, "min_ellipse_axis_ratio": 0.75,
+            "detect_max_width_px": 400, "stable_frames": 1,
+            "calibrated": True,
+        }, cv2)
+        found = detector.detect(frame, color="red", hsv_colors=hsv)
+        self.assertGreaterEqual(len(found), 1)
+        nearest = min(found, key=lambda item: (item.center_x_px - 180) ** 2
+                      + (item.center_y_px - 150) ** 2)
+        self.assertLess(abs(nearest.center_x_px - 180), 24)
+        self.assertLess(abs(nearest.center_y_px - 150), 24)
+        self.assertGreater(abs(nearest.center_x_px - 620), 80)
+
 
 if __name__ == "__main__":
     unittest.main()

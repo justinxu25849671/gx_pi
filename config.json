@@ -33,21 +33,36 @@
     "height": 1080,
     "fps": 30,
     "object_detection": {
-      "roi": [0.0, 0.0, 1.0, 1.0],
+      "roi": [
+        0.0,
+        0.0,
+        1.0,
+        1.0
+      ],
       "occlusion_rects": [],
       "min_area_px": 900,
       "max_area_px": 250000,
       "min_aspect_ratio": 0.55,
-      "max_aspect_ratio": 1.80,
+      "max_aspect_ratio": 1.8,
       "min_solidity": 0.75,
       "min_extent": 0.45,
-      "min_circularity": 0.80,
+      "min_circularity": 0.8,
+      "detect_max_width_px": 640,
       "morphology_kernel_px": 5,
-      "selection_reference_px": [960, 540],
+      "selection_reference_px": [
+        960,
+        540
+      ],
       "stable_frames": 4,
       "stable_center_tolerance_px": 8,
       "max_area_change_ratio": 1.6,
-      "reference_point": {"mode": "min_enclosing_circle", "offset_px": [0, 0]}
+      "reference_point": {
+        "mode": "min_enclosing_circle",
+        "offset_px": [
+          0,
+          0
+        ]
+      }
     }
   },
   "qr_camera": {
@@ -62,37 +77,189 @@
   },
   "arena": {
     "calibrated": false,
-    "initial_pose": {"x_mm": 0.0, "y_mm": 0.0, "yaw_deg": 0.0},
+    "initial_pose": {
+      "x_mm": 0.0,
+      "y_mm": 0.0,
+      "yaw_deg": 0.0
+    },
     "zones": {
-      "qr": {"x_mm": 0.0, "y_mm": 0.0, "yaw_deg": 0.0},
-      "raw": {"x_mm": 0.0, "y_mm": 0.0, "yaw_deg": 0.0},
-      "coarse": {"x_mm": 0.0, "y_mm": 0.0, "yaw_deg": 0.0},
-      "temporary": {"x_mm": 0.0, "y_mm": 0.0, "yaw_deg": 0.0},
-      "home": {"x_mm": 0.0, "y_mm": 0.0, "yaw_deg": 0.0}
+      "qr": {
+        "x_mm": 0.0,
+        "y_mm": 0.0,
+        "yaw_deg": 0.0
+      },
+      "raw": {
+        "x_mm": 0.0,
+        "y_mm": 0.0,
+        "yaw_deg": 0.0
+      },
+      "coarse": {
+        "x_mm": 0.0,
+        "y_mm": 0.0,
+        "yaw_deg": 0.0
+      },
+      "temporary": {
+        "x_mm": 0.0,
+        "y_mm": 0.0,
+        "yaw_deg": 0.0
+      },
+      "home": {
+        "x_mm": 0.0,
+        "y_mm": 0.0,
+        "yaw_deg": 0.0
+      }
     }
   },
   "node_route": {
-    "initial_exit_mm": {"forward": 100, "left": 80},
+    "initial_exit_mm": {
+      "forward": 100,
+      "left": 80
+    },
     "node_coordinates": {
-      "1": [0, 0], "2": [1, 0], "3": [2, 0],
-      "4": [0, 1], "5": [1, 1], "6": [2, 1],
-      "7": [0, 2], "8": [1, 2], "9": [2, 2]
+      "1": [
+        0,
+        0
+      ],
+      "2": [
+        1,
+        0
+      ],
+      "3": [
+        2,
+        0
+      ],
+      "4": [
+        0,
+        1
+      ],
+      "5": [
+        1,
+        1
+      ],
+      "6": [
+        2,
+        1
+      ],
+      "7": [
+        0,
+        2
+      ],
+      "8": [
+        1,
+        2
+      ],
+      "9": [
+        2,
+        2
+      ]
     },
     "node_mm_coordinates": {
-      "1": [0, 0], "2": [1050, 80], "3": [1970, 80],
-      "4": [80, 1080], "5": [1050, 1080], "6": [1970, 1080],
-      "7": [80, 1990], "8": [1050, 1990], "9": [1970, 1990]
+      "1": [
+        0,
+        0
+      ],
+      "2": [
+        1050,
+        80
+      ],
+      "3": [
+        1970,
+        80
+      ],
+      "4": [
+        80,
+        1080
+      ],
+      "5": [
+        1050,
+        1080
+      ],
+      "6": [
+        1970,
+        1080
+      ],
+      "7": [
+        80,
+        1990
+      ],
+      "8": [
+        1050,
+        1990
+      ],
+      "9": [
+        1970,
+        1990
+      ]
     },
     "edges": [
-      {"from": 1, "to": 2, "distance_mm": 950}, {"from": 2, "to": 3, "distance_mm": 900},
-      {"from": 1, "to": 4, "distance_mm": 1100},
-      {"from": 4, "to": 5, "distance_mm": 950}, {"from": 5, "to": 6, "distance_mm": 950},
-      {"from": 2, "to": 5, "distance_mm": 1101.1}, {"from": 3, "to": 6, "distance_mm": 950},
-      {"from": 4, "to": 7, "distance_mm": 900}, {"from": 5, "to": 8, "distance_mm": 850},
-      {"from": 6, "to": 9, "distance_mm": 855.9},
-      {"from": 7, "to": 8, "distance_mm": 900}, {"from": 8, "to": 9, "distance_mm": 950}
+      {
+        "from": 1,
+        "to": 2,
+        "distance_mm": 950
+      },
+      {
+        "from": 2,
+        "to": 3,
+        "distance_mm": 900
+      },
+      {
+        "from": 1,
+        "to": 4,
+        "distance_mm": 1100
+      },
+      {
+        "from": 4,
+        "to": 5,
+        "distance_mm": 950
+      },
+      {
+        "from": 5,
+        "to": 6,
+        "distance_mm": 950
+      },
+      {
+        "from": 2,
+        "to": 5,
+        "distance_mm": 1101.1
+      },
+      {
+        "from": 3,
+        "to": 6,
+        "distance_mm": 950
+      },
+      {
+        "from": 4,
+        "to": 7,
+        "distance_mm": 900
+      },
+      {
+        "from": 5,
+        "to": 8,
+        "distance_mm": 850
+      },
+      {
+        "from": 6,
+        "to": 9,
+        "distance_mm": 855.9
+      },
+      {
+        "from": 7,
+        "to": 8,
+        "distance_mm": 900
+      },
+      {
+        "from": 8,
+        "to": 9,
+        "distance_mm": 950
+      }
     ],
-    "zone_nodes": {"qr": 4, "raw": 2, "coarse": 8, "temporary": 6, "home": 1}
+    "zone_nodes": {
+      "qr": 4,
+      "raw": 2,
+      "coarse": 8,
+      "temporary": 6,
+      "home": 1
+    }
   },
   "mechanism": {
     "pick_duration_s": 1.8,
@@ -106,17 +273,65 @@
     "fullscreen": true
   },
   "hsv_colors": {
-    "red": [[0, 100, 70, 10, 255, 255], [170, 100, 70, 180, 255, 255]],
-    "yellow": [[18, 90, 80, 40, 255, 255]],
-    "blue": [[95, 80, 60, 130, 255, 255]],
-    "green": [[42, 70, 50, 85, 255, 255]]
+    "red": [
+      [
+        167,
+        124,
+        149,
+        179,
+        255,
+        255
+      ]
+    ],
+    "yellow": [
+      [
+        18,
+        90,
+        80,
+        40,
+        255,
+        255
+      ]
+    ],
+    "blue": [
+      [
+        95,
+        80,
+        60,
+        130,
+        255,
+        255
+      ]
+    ],
+    "green": [
+      [
+        42,
+        70,
+        50,
+        85,
+        255,
+        255
+      ]
+    ]
   },
   "ring_detection": {
     "calibrated": false,
-    "roi": [0.0, 0.0, 1.0, 1.0],
+    "roi": [
+      0.0,
+      0.0,
+      1.0,
+      1.0
+    ],
     "occlusion_rects": [],
     "material_base_diameter_mm": 50,
-    "ring_outer_diameters_mm": [53, 58, 65, 75, 85, 95],
+    "ring_outer_diameters_mm": [
+      53,
+      58,
+      65,
+      75,
+      85,
+      95
+    ],
     "position_centers_px": {},
     "position_match_tolerance_px": 120,
     "candidate_ambiguity_px": 12,
@@ -125,8 +340,8 @@
     "min_concentric_layers": 2,
     "concentric_center_tolerance_px": 12,
     "min_radius_separation_px": 4,
-    "diameter_tolerance_ratio": 0.10,
-    "min_visible_arc_ratio": 0.30,
+    "diameter_tolerance_ratio": 0.1,
+    "min_visible_arc_ratio": 0.3,
     "max_fit_error_px": 2.5,
     "edge_search_px": 3,
     "canny_low": 60,
@@ -134,7 +349,7 @@
     "hough_dp": 1.2,
     "hough_min_distance_px": 80,
     "hough_accumulator": 48,
-    "min_ellipse_axis_ratio": 0.80,
+    "min_ellipse_axis_ratio": 0.8,
     "proposal_min_arc_ratio": 0.45,
     "detect_max_width_px": 640,
     "stable_frames": 4,
@@ -145,15 +360,110 @@
     "camera": {
       "calibrated": false,
       "apply": false,
-      "camera_matrix": [[1, 0, 0], [0, 1, 0], [0, 0, 1]],
-      "distortion_coefficients": [0, 0, 0, 0, 0],
-      "plane_homography": [[1, 0, 0], [0, 1, 0], [0, 0, 1]],
-      "output_size": [1920, 1080]
+      "camera_matrix": [
+        [
+          1,
+          0,
+          0
+        ],
+        [
+          0,
+          1,
+          0
+        ],
+        [
+          0,
+          0,
+          1
+        ]
+      ],
+      "distortion_coefficients": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "plane_homography": [
+        [
+          1,
+          0,
+          0
+        ],
+        [
+          0,
+          1,
+          0
+        ],
+        [
+          0,
+          0,
+          1
+        ]
+      ],
+      "output_size": [
+        1920,
+        1080
+      ]
     },
     "poses": {
-      "pickup": {"calibrated": false, "observation_height_mm": 0, "rotation_deg": 0, "landing_reference_px": [960, 540], "pixel_to_motion_mm": [[0, 0], [0, 0]]},
-      "placement_layer1": {"calibrated": false, "observation_height_mm": 0, "rotation_deg": 0, "landing_reference_px": [960, 540], "pixel_to_motion_mm": [[0, 0], [0, 0]]},
-      "placement_layer2": {"calibrated": false, "observation_height_mm": 0, "rotation_deg": 0, "landing_reference_px": [960, 540], "pixel_to_motion_mm": [[0, 0], [0, 0]]}
+      "pickup": {
+        "calibrated": false,
+        "observation_height_mm": 0,
+        "rotation_deg": 0,
+        "landing_reference_px": [
+          960,
+          540
+        ],
+        "pixel_to_motion_mm": [
+          [
+            0,
+            0
+          ],
+          [
+            0,
+            0
+          ]
+        ]
+      },
+      "placement_layer1": {
+        "calibrated": false,
+        "observation_height_mm": 0,
+        "rotation_deg": 0,
+        "landing_reference_px": [
+          960,
+          540
+        ],
+        "pixel_to_motion_mm": [
+          [
+            0,
+            0
+          ],
+          [
+            0,
+            0
+          ]
+        ]
+      },
+      "placement_layer2": {
+        "calibrated": false,
+        "observation_height_mm": 0,
+        "rotation_deg": 0,
+        "landing_reference_px": [
+          960,
+          540
+        ],
+        "pixel_to_motion_mm": [
+          [
+            0,
+            0
+          ],
+          [
+            0,
+            0
+          ]
+        ]
+      }
     }
   },
   "placement_alignment": {
@@ -162,7 +472,7 @@
     "max_correction_step_mm": 5.0,
     "max_corrections": 8,
     "required_aligned_frames": 4,
-    "min_target_quality": 0.70,
+    "min_target_quality": 0.7,
     "total_timeout_s": 20.0
   }
 }

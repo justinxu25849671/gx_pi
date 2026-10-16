@@ -5,7 +5,7 @@
 
 ## 启动
 
-树莓派工程路径为 `/home/pi/文档/pi`。1080p/30 帧 USB 相机固定使用 V4L2 + MJPEG：
+树莓派工程路径为 `/home/pi/文档/pi`。USB 相机使用 V4L2 + MJPEG，分辨率用相机实际画面，坐标以该画面中心为原点：
 
 ```bash
 cd /home/pi/文档/pi

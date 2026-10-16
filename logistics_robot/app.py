@@ -338,7 +338,8 @@ def main() -> int:
     if arguments.vision_web:
         return run_vision_web(config, arguments.vision_camera_index, arguments.vision_mode,
                               arguments.vision_web_host or "0.0.0.0",
-                              8080 if arguments.vision_web_port is None else arguments.vision_web_port)
+                              8080 if arguments.vision_web_port is None else arguments.vision_web_port,
+                              arguments.config)
     if (arguments.vision_web_host is not None or arguments.vision_web_port is not None):
         parser.error("--vision-web-host/--vision-web-port 必须与 --vision-web 同用")
     if arguments.vision_debug:

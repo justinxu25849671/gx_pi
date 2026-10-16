@@ -29,6 +29,22 @@ class CalibrationConfigTests(unittest.TestCase):
         marker = object()
         self.assertIs(FrameRectifier({"apply": False}).apply(marker), marker)
 
+    def test_rectifier_keeps_the_incoming_frame_size(self):
+        try:
+            import cv2
+            import numpy as np
+        except ImportError:
+            self.skipTest("未安装 numpy/OpenCV")
+        frame = np.zeros((40, 60, 3), dtype=np.uint8)
+        rectified = FrameRectifier({
+            "apply": True, "calibrated": True,
+            "camera_matrix": [[1, 0, 0], [0, 1, 0], [0, 0, 1]],
+            "distortion_coefficients": [0, 0, 0, 0, 0],
+            "plane_homography": [[1, 0, 0], [0, 1, 0], [0, 0, 1]],
+            "output_size": [1920, 1080],
+        }, cv2).apply(frame)
+        self.assertEqual(rectified.shape[:2], (40, 60))
+
     def test_enabled_uncalibrated_frame_rectifier_is_rejected(self):
         with self.assertRaisesRegex(RuntimeError, "尚未标定"):
             FrameRectifier({"apply": True, "calibrated": False})
