@@ -47,7 +47,7 @@ def retain_hsv_color(frame, color: str, hsv_colors: dict[str, Any], cv2):
 
 def select_upper_circle(objects: list[DetectedObject]) -> DetectedObject | None:
     """在已稳定的圆形里选画面最上层的一个。图像 y 越小越靠上。"""
-    stable = [item for item in objects if item.stable]
+    stable = [item for item in objects if item.stable and item.top_valid]
     if not stable:
         return None
     return min(stable, key=lambda item: (item.circle_center_px[1], item.circle_center_px[0]))
@@ -95,8 +95,7 @@ def run_color_ring_locate(config: dict[str, Any], color: str,
         while True:
             frame = rectifier.apply(vision.read())
             sample = motion_gate.update(frame)
-            if not sample.reuse:
-                objects = vision.detect_objects(frame, (color,), sample.regions)
+            objects = vision.detect_objects(frame, (color,))
             target = select_upper_circle(objects)
             height, width = frame.shape[:2]
             point = upper_circle_coordinate(objects, width, height)

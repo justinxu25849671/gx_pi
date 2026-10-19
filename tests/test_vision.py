@@ -100,7 +100,7 @@ class VisionTests(unittest.TestCase):
             objects = detector.detect(frame)
             self.assertEqual(len(objects), 1 if index == 2 else 0)
         self.assertTrue(objects[0].stable)
-        self.assertAlmostEqual(objects[0].reference_point_px[0], 99.5, delta=1.0)
+        self.assertAlmostEqual(objects[0].reference_point_px[0], 97, delta=1.0)
         self.assertAlmostEqual(objects[0].circle_center_px[0], objects[0].center_x_px, delta=8)
         self.assertAlmostEqual(objects[0].circle_center_px[1], objects[0].center_y_px, delta=8)
 
@@ -152,7 +152,7 @@ class VisionTests(unittest.TestCase):
         self.assertLess(abs(objects[0].circle_center_px[1] - 70), 10)
 
     @unittest.skipIf(np is None, "未安装 numpy/OpenCV，无法运行图像检测测试")
-    def test_only_the_largest_color_blob_is_cut_into_a_circle(self):
+    def test_largest_color_blob_supplies_top_candidate(self):
         import cv2
         config = {
             "object_detection": {

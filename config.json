@@ -62,7 +62,17 @@
           0,
           0
         ]
-      }
+      },
+      "top_canny_low": 45,
+      "top_canny_high": 120,
+      "top_min_axis_ratio": 0.35,
+      "top_min_area_ratio": 0.12,
+      "top_max_area_ratio": 1.15,
+      "top_edge_tolerance_px": 2.5,
+      "top_min_edge_support": 0.78,
+      "top_min_arc_coverage": 0.75,
+      "top_border_margin_px": 3,
+      "top_fit_trials": 64
     }
   },
   "qr_camera": {

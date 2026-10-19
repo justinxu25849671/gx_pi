@@ -70,6 +70,9 @@ class ObjectDetector:
         self._hsv_colors = hsv_colors
         self._tracks: list[dict[str, Any]] = []
         self._next_track_id = 1
+        self.candidates = []
+        self.color_mask = None
+        self.edge_view = None
 
     def clear_tracks(self) -> None:
         """颜色范围刚学完时丢掉旧轨迹，避免沿用学习前的目标。"""
@@ -200,7 +203,7 @@ class ObjectDetector:
             circle_x, circle_y = item.circle_center_px
             emitted.append(replace(
                 item, stable=True, stable_frames=track["count"], confidence=confidence,
-                center_x_px=item.center_x_px + shift_x, center_y_px=item.center_y_px + shift_y,
+
                 reference_x_px=float(track["x"]), reference_y_px=float(track["y"]),
                 circle_x_px=circle_x + shift_x, circle_y_px=circle_y + shift_y,
                 track_id=int(track["id"]),
@@ -208,153 +211,73 @@ class ObjectDetector:
         self._tracks = next_tracks
         return emitted
 
-    def _cut_circle(self, contour, image_shape):
-        """从最大色块的轮廓上截出圆形。整块已经够圆时直接用它。"""
-        cv2 = self.cv2
-        import numpy as np
-        if self._round_cover(contour) >= 0.62:
-            return contour
-        mask = np.zeros(image_shape[:2], dtype=np.uint8)
-        cv2.drawContours(mask, [contour], -1, 255, -1)
-        widths = np.count_nonzero(mask, axis=1)
-        if widths.size == 0:
-            return None
-        max_width = int(widths.max())
-        if max_width < 8:
-            return None
-        radius = max_width / 2.0
-        span = int(radius)
-        height = mask.shape[0]
-        best_error = None
-        best_center_y = None
-        for center_y in range(span, max(span, height - span)):
-            error = 0.0
-            counted = 0
-            for offset in range(-span, span + 1):
-                row = center_y + offset
-                if not 0 <= row < height:
-                    continue
-                expected = 2.0 * math.sqrt(max(0.0, radius * radius - offset * offset))
-                error += abs(float(widths[row]) - expected)
-                counted += 1
-            if counted == 0:
-                continue
-            error /= counted
-            if best_error is None or error < best_error:
-                best_error = error
-                best_center_y = center_y
-        if best_center_y is None or best_error > 0.28 * max_width:
-            return None
-        band = mask[max(0, best_center_y - span):min(height, best_center_y + span + 1)]
-        columns = np.flatnonzero(band.any(axis=0))
-        if columns.size == 0:
-            return None
-        center_x = float(columns[0] + columns[-1]) / 2.0
-        disk = np.zeros_like(mask)
-        cv2.circle(disk, (int(round(center_x)), int(best_center_y)),
-                   int(round(radius)), 255, -1)
-        cut = cv2.bitwise_and(disk, mask)
-        found, _ = cv2.findContours(cut, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        if not found:
-            return None
-        face = max(found, key=cv2.contourArea)
-        if self._round_cover(face) < 0.5:
-            return None
-        return face
-
-    @staticmethod
-    def _round_cover(contour) -> float:
-        import cv2
-        area = float(cv2.contourArea(contour))
-        (_x, _y), radius = cv2.minEnclosingCircle(contour)
-        if radius <= 0:
-            return 0.0
-        return area / (math.pi * radius * radius)
-
     def detect(self, frame, colors=None, motion_regions=None) -> list[DetectedObject]:
+        from .top_face import fit_top
+        import numpy as np
         cv2 = self.cv2
         view, scale = self._detection_view(frame)
         factor = 1.0 / scale
-        area_scale = scale * scale
         hsv = cv2.cvtColor(view, cv2.COLOR_BGR2HSV)
         valid_mask = self._valid_mask(view.shape)
-        search = search_mask(
-            view.shape, scale, motion_regions,
-            [(track["x"], track["y"], 120.0) for track in self._tracks],
-            cv2,
-        )
-        minimum = float(self._config.get("min_area_px", self._config.get("min_object_area_px", 900))) * area_scale
-        maximum = float(self._config.get("max_area_px", float("inf"))) * area_scale
-        min_aspect = float(self._config.get("min_aspect_ratio", 0.55))
-        max_aspect = float(self._config.get("max_aspect_ratio", 1.80))
-        min_solidity = float(self._config.get("min_solidity", 0.75))
-        min_extent = float(self._config.get("min_extent", 0.45))
-        kernel_size = max(1, int(round(int(self._config.get("morphology_kernel_px", 5)) * scale)))
-        if kernel_size % 2 == 0:
-            kernel_size += 1
+        minimum = float(self._config.get("min_area_px", 900))
+        maximum = float(self._config.get("max_area_px", float("inf")))
+        kernel_size = max(1, round(self._config.get("morphology_kernel_px", 5)*scale)) | 1
         kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (kernel_size, kernel_size))
-        chosen = MATERIAL_COLORS if not colors else tuple(
-            color for color in colors if color in MATERIAL_COLORS)
-        objects: list[DetectedObject] = []
+        chosen = MATERIAL_COLORS if not colors else tuple(c for c in colors if c in MATERIAL_COLORS)
+        combined = np.zeros(view.shape[:2], np.uint8)
+        self.edge_view = np.zeros(frame.shape[:2], np.uint8)
+        candidates = []
         for color in chosen:
-            mask = None
+            mask = np.zeros(view.shape[:2], np.uint8)
             for bounds in self._hsv_colors[color]:
-                h1, s1, v1, h2, s2, v2 = (int(value) for value in bounds)
-                partial = cv2.inRange(hsv, (h1, s1, v1), (h2, s2, v2))
-                mask = partial if mask is None else cv2.bitwise_or(mask, partial)
-            if mask is None:
-                continue
-            mask = cv2.bitwise_and(mask, valid_mask)
-            if search is not None:
-                mask = cv2.bitwise_and(mask, search)
+                h1, s1, v1, h2, s2, v2 = map(int, bounds)
+                mask |= cv2.inRange(hsv, (h1, s1, v1), (h2, s2, v2))
+            mask &= valid_mask
             mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
             mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
+            combined |= mask
             contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-            large = [item for item in contours if cv2.contourArea(item) >= minimum]
-            if not large:
+            # Ignore only tiny noise; retain rejected material for diagnosis.
+            contours = [c for c in contours if cv2.contourArea(c) >= max(16, minimum*scale*scale*0.15)]
+            if not contours:
                 continue
-            contour = max(large, key=cv2.contourArea)
-            contour = self._cut_circle(contour, hsv.shape)
-            if contour is None:
-                continue
+            contour = np.rint(max(contours, key=cv2.contourArea)*factor).astype(np.int32)
             area = float(cv2.contourArea(contour))
-            if not minimum <= area <= maximum:
-                continue
-            x, y, box_width, box_height = cv2.boundingRect(contour)
-            if box_width <= 0 or box_height <= 0:
-                continue
-            aspect = box_width / box_height
-            hull_area = float(cv2.contourArea(cv2.convexHull(contour)))
-            solidity = area / hull_area if hull_area > 0 else 0.0
-            extent = area / float(box_width * box_height)
-            if not min_aspect <= aspect <= max_aspect:
-                continue
-            if solidity < min_solidity or extent < min_extent:
-                continue
-            min_circularity = min(0.62, float(self._config.get("min_circularity", 0.62)))
-            if min_circularity > 0 and self._round_cover(contour) < min_circularity:
-                continue
+            x, y, w, h = cv2.boundingRect(contour)
             moments = cv2.moments(contour)
-            if moments["m00"] == 0:
+            if not moments["m00"]:
                 continue
-            center = (moments["m10"] / moments["m00"],
-                      moments["m01"] / moments["m00"])
-            reference = self._reference_point(contour, (x, y, box_width, box_height), center)
-            circle_center, _radius = cv2.minEnclosingCircle(contour)
-            points = tuple((int(round(point[0][0] * factor)), int(round(point[0][1] * factor)))
-                           for point in contour)
-            objects.append(DetectedObject(
-                color=color, center_x_px=center[0] * factor, center_y_px=center[1] * factor,
-                area_px=area / area_scale,
-                bbox=(int(round(x * factor)), int(round(y * factor)),
-                      int(round(box_width * factor)), int(round(box_height * factor))),
-                contour=points,
-                aspect_ratio=aspect, solidity=solidity, extent=extent,
-                reference_x_px=reference[0] * factor, reference_y_px=reference[1] * factor,
-                circle_x_px=float(circle_center[0]) * factor,
-                circle_y_px=float(circle_center[1]) * factor,
+            center = (moments["m10"]/moments["m00"], moments["m01"]/moments["m00"])
+            hull_area = cv2.contourArea(cv2.convexHull(contour))
+            solidity, extent = area/max(hull_area, 1), area/max(w*h, 1)
+            ellipse, reason, metrics, edges = fit_top(frame, contour, self._config)
+            if not minimum <= area <= maximum and not reason.startswith("目标不完整"):
+                reason = "面积不符"
+            # ROI and exclusion boundaries must not invent a complete candidate.
+            boundary = cv2.dilate(255-valid_mask, np.ones((3, 3), np.uint8))
+            small = np.rint(contour.reshape(-1, 2)*scale).astype(int)
+            small[:, 0] = np.clip(small[:, 0], 0, boundary.shape[1]-1)
+            small[:, 1] = np.clip(small[:, 1], 0, boundary.shape[0]-1)
+            if np.any(boundary[small[:, 1], small[:, 0]]):
+                reason = "目标不完整：接触 ROI 或遮挡区边界"
+            if edges is not None:
+                ex, ey, image = edges
+                self.edge_view[ey:ey+image.shape[0], ex:ex+image.shape[1]] |= image
+            top_center = ellipse[0] if ellipse else center
+            candidates.append(DetectedObject(
+                color=color, center_x_px=center[0], center_y_px=center[1], area_px=area,
+                bbox=(x, y, w, h), contour=tuple(map(tuple, contour.reshape(-1, 2).tolist())),
+                aspect_ratio=w/h, solidity=solidity, extent=extent,
+                reference_x_px=top_center[0], reference_y_px=top_center[1],
+                circle_x_px=top_center[0], circle_y_px=top_center[1],
+                top_valid=ellipse is not None and not reason, top_ellipse=ellipse,
+                top_reason=reason, top_metrics=tuple(metrics.items()),
             ))
-        return self._stabilize(objects, frame.shape, motion_regions)
+        self.color_mask = cv2.resize(combined, (frame.shape[1], frame.shape[0]), interpolation=cv2.INTER_NEAREST)
+        stable = self._stabilize([c for c in candidates if c.top_valid], frame.shape, motion_regions)
+        by_color = {c.color: c for c in stable}
+        self.candidates = [by_color.get(c.color, c) for c in candidates]
+        return stable
 
     def _detection_view(self, frame):
         """宽画面先缩小再分割。返回检测图和相对原图的缩放。"""
@@ -387,14 +310,16 @@ def draw_shape_segments(frame, objects: list[DetectedObject], target: DetectedOb
     except ImportError as exc:
         raise RuntimeError("未安装 OpenCV/numpy，请先执行 pip install -r requirements.txt") from exc
     output = frame.copy()
-    overlay = output.copy()
     for item in objects:
+        if item.top_ellipse:
+            cv2.ellipse(output, item.top_ellipse, (0, 255, 255) if item.top_valid else (0, 140, 255), 2)
+            cv2.drawMarker(output, tuple(round(v) for v in item.top_ellipse[0]),
+                           (0, 255, 255) if item.top_valid else (0, 140, 255), cv2.MARKER_CROSS, 12, 2)
         if not item.contour:
             continue
         contour = np.asarray(item.contour, dtype=np.int32).reshape((-1, 1, 2))
-        cv2.drawContours(overlay, [contour], -1, _DISPLAY_COLORS_BGR[item.color], -1)
-    if any(item.contour for item in objects):
-        cv2.addWeighted(overlay, 0.45, output, 0.55, 0.0, output)
+        cv2.drawContours(output, [contour], -1, _DISPLAY_COLORS_BGR[item.color], 2)
+        cv2.drawMarker(output, (round(item.center_x_px), round(item.center_y_px)), (255, 0, 255), cv2.MARKER_CROSS, 10, 1)
     if target is not None:
         center = (round(target.circle_center_px[0]), round(target.circle_center_px[1]))
         cv2.circle(output, center, 10, (255, 255, 255), 2)

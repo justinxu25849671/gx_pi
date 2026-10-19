@@ -3,6 +3,10 @@
 from __future__ import annotations
 
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import copy
+import io
+import zipfile
+import math
 import json
 import logging
 from pathlib import Path
@@ -41,6 +45,11 @@ class FrameHub:
         self._bgr = None
         self._reset_tracks = False
         self.closed = False
+        self.view = "result"
+        self.send_enabled = False
+        self.revision = 0
+        self.capture_frames = None
+
 
     def publish(self, jpeg: bytes, status: dict[str, Any]) -> None:
         with self._lock:
@@ -52,6 +61,9 @@ class FrameHub:
     def set_locate_color(self, color: str) -> None:
         with self._lock:
             self._locate_color = color
+            self.send_enabled = False
+            self._reset_tracks = True
+            self.revision += 1
 
     def get_locate_color(self) -> str:
         with self._lock:
@@ -61,6 +73,7 @@ class FrameHub:
         with self._lock:
             status = dict(self._status)
             status["locate_color"] = self._locate_color
+            status["send_enabled"] = self.send_enabled
             return self._jpeg, status
 
     def wait_newer(self, generation: int, timeout: float) -> tuple[int, bytes] | None:
@@ -91,11 +104,13 @@ class FrameHub:
                 raise RuntimeError("画面尚未就绪")
             patch = crop_patch(frame, x, y)
         bounds = hsv_bounds_from_bgr(patch)
-        config["hsv_colors"][color] = bounds
         with self._lock:
+            config["hsv_colors"][color] = bounds
             self._reset_tracks = True
-        if config_path is not None:
-            save_config(config_path, config)
+            self.send_enabled = False
+            self.revision += 1
+            if config_path is not None:
+                save_config(config_path, config)
         return bounds
 
     def close(self) -> None:
@@ -122,6 +137,10 @@ def vision_status(frame_shape, fps: float, camera_index: int, mode: str,
             "track_id": item.track_id,
             "stable": bool(item.stable), "stable_frames": int(item.stable_frames),
             "quality": round(float(item.confidence), 3),
+            "material_center": [item.center_x_px, item.center_y_px],
+            "top_center": list(item.top_ellipse[0]) if item.top_ellipse else None,
+            "top_valid": item.top_valid, "reason": item.top_reason,
+            "metrics": dict(item.top_metrics),
         })
     ring_rows = []
     for item in rings:
@@ -141,6 +160,10 @@ def vision_status(frame_shape, fps: float, camera_index: int, mode: str,
         "objects": object_rows, "rings": ring_rows,
         "target": _target_row(target, width, height),
         "send_state": send_state,
+        "recognition_state": ("未发现物料" if not objects else
+                              "可发送" if any(o.top_valid and o.stable for o in objects) else
+                              "顶面已确认但未稳定" if any(o.top_valid for o in objects) else
+                              "已找到物料但顶面未确认"),
         "tune": tune or {},
     }
 
@@ -311,6 +334,11 @@ class VisionWebServer:
 
 def _handler(hub: FrameHub, html: bytes, config: dict[str, Any] | None,
              config_path: Path | None):
+    from .top_face import DEFAULTS
+    setting_defaults = {**DEFAULTS, "min_area_px": 900, "max_area_px": 250000,
+                        "min_circularity": 0.55, "stable_frames": 4,
+                        "stable_center_tolerance_px": 8, "morphology_kernel_px": 5}
+
     class Handler(BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
 
@@ -322,6 +350,29 @@ def _handler(hub: FrameHub, html: bytes, config: dict[str, Any] | None,
                 _, status = hub.latest()
                 body = json.dumps(status, ensure_ascii=False).encode("utf-8")
                 self._send(200, "application/json; charset=utf-8", body)
+            elif path == "/settings":
+                with hub._lock:
+                    current = {**setting_defaults, **(config or {}).get("object_camera", {}).get("object_detection", {})}
+                self._send(200, "application/json", json.dumps({k: current[k] for k in setting_defaults}).encode())
+            elif path == "/capture.zip":
+                with hub._lock:
+                    capture = hub.capture_frames
+                if capture is None:
+                    self.send_error(503, "No frame")
+                    return
+                import cv2
+                raw_frame, frame, mask, edges, diagnostic, status, settings = capture
+                output = io.BytesIO()
+                with zipfile.ZipFile(output, "w", zipfile.ZIP_DEFLATED) as archive:
+                    for name, image in (("camera-original.png", raw_frame), ("detection-original.png", frame),
+                                        ("segmentation.png", mask), ("edges.png", edges), ("diagnostic.png", diagnostic)):
+                        ok, encoded = cv2.imencode(".png", image)
+                        if not ok:
+                            raise RuntimeError("PNG encoding failed")
+                        archive.writestr(name, encoded.tobytes())
+                    archive.writestr("status.json", json.dumps(status, ensure_ascii=False, indent=2))
+                    archive.writestr("config.json", json.dumps(settings, ensure_ascii=False, indent=2))
+                self._send(200, "application/zip", output.getvalue())
             elif path == "/snapshot.jpg":
                 jpeg, _ = hub.latest()
                 if not jpeg:
@@ -343,7 +394,65 @@ def _handler(hub: FrameHub, html: bytes, config: dict[str, Any] | None,
                 body = json.dumps({"ok": False, "error": "请求无效"}, ensure_ascii=False).encode("utf-8")
                 self._send(400, "application/json; charset=utf-8", body)
                 return
-            if path == "/color":
+            if not isinstance(payload, dict):
+                self._send(400, "application/json", b'{"ok":false}')
+                return
+            if path == "/controls":
+                try:
+                    with hub._lock:
+                        if "view" in payload:
+                            if payload["view"] not in ("raw", "mask", "edges", "result"):
+                                raise ValueError("视图无效")
+                            hub.view = payload["view"]
+                        if "send_enabled" in payload:
+                            if not isinstance(payload["send_enabled"], bool):
+                                raise ValueError("发送开关无效")
+                            hub.send_enabled = payload["send_enabled"] and bool(hub._locate_color)
+                            hub.revision += 1
+                    self._send(200, "application/json", b'{"ok":true}')
+                except ValueError as exc:
+                    self._send(400, "application/json", json.dumps({"error": str(exc)}).encode())
+            elif path == "/settings":
+                try:
+                    if config is None:
+                        raise ValueError("无配置")
+                    with hub._lock:
+                        current = dict(config["object_camera"]["object_detection"])
+                        updates = setting_defaults if payload.get("reset") else payload.get("values", {})
+                        for key, value in updates.items():
+                            if key not in setting_defaults or isinstance(value, bool) or not isinstance(value, (float, int)) or not math.isfinite(value):
+                                raise ValueError("参数无效")
+                            current[key] = value
+                        for key in ("top_min_axis_ratio", "top_min_area_ratio", "top_min_edge_support", "top_min_arc_coverage", "min_circularity"):
+                            if not 0 < current.get(key, setting_defaults[key]) <= 1:
+                                raise ValueError(key + " 必须在 (0,1]")
+                        for key in setting_defaults:
+                            if current.get(key, setting_defaults[key]) <= 0:
+                                raise ValueError(key + " 必须大于 0")
+                        for key in ("top_canny_low", "top_canny_high", "top_border_margin_px", "top_fit_trials", "stable_frames", "morphology_kernel_px"):
+                            if int(current.get(key, setting_defaults[key])) != current.get(key, setting_defaults[key]):
+                                raise ValueError(key + " 必须为整数")
+                        if not (current.get("top_canny_low",45) < current.get("top_canny_high",120) <= 255
+                                and current["min_area_px"] < current["max_area_px"]
+                                and current.get("top_min_area_ratio",.12) < current.get("top_max_area_ratio",1.15) <= 2
+                                and current.get("top_fit_trials",64) <= 256
+                                and current.get("morphology_kernel_px",5) <= 31
+                                and current.get("top_edge_tolerance_px",2.5) <= 10):
+                            raise ValueError("参数范围或上下限无效")
+                        updated = copy.deepcopy(config)
+                        updated["object_camera"]["object_detection"] = current
+                        if payload.get("save"):
+                            if config_path is None:
+                                raise ValueError("未指定配置文件路径")
+                            save_config(config_path, updated)
+                        config["object_camera"]["object_detection"] = current
+                        hub.send_enabled = False
+                        hub._reset_tracks = True
+                        hub.revision += 1
+                    self._send(200, "application/json", b'{"ok":true}')
+                except (ValueError, TypeError, OSError) as exc:
+                    self._send(400, "application/json", json.dumps({"error": str(exc)}, ensure_ascii=False).encode())
+            elif path == "/color":
                 self._set_color(payload)
             elif path == "/learn":
                 self._learn(payload)
@@ -438,14 +547,23 @@ def _camera_loop(config: dict[str, Any], camera_index: int | None, mode: str,
         active_color = hub.get_locate_color()
         previous = time.perf_counter()
         while not stop.is_set():
-            color = hub.get_locate_color()
+            with hub._lock:
+                color = hub._locate_color
+                revision = hub.revision
+                settings = copy.deepcopy(config)
+                selected_view = hub.view
+                reset_tracks = hub._reset_tracks
+                hub._reset_tracks = False
+            vision._detector._config.update(settings["object_camera"]["object_detection"])
+            vision._detector._hsv_colors = settings["hsv_colors"]
             if ring_detector is not None and color != active_color:
                 ring_detector = RingDetector(config["ring_detection"], vision.cv2)
                 active_color = color
                 force_detect = True
-            frame = rectifier.apply(vision.read())
+            raw_frame = vision.read()
+            frame = rectifier.apply(raw_frame)
             hub.remember_frame(frame)
-            if hub.consume_track_reset():
+            if reset_tracks:
                 vision.clear_tracks()
                 force_detect = True
             now = time.perf_counter()
@@ -472,20 +590,37 @@ def _camera_loop(config: dict[str, Any], camera_index: int | None, mode: str,
                 motion_name = "hold"
             target = select_upper_circle(objects) if color else None
             point = upper_circle_coordinate(objects, frame.shape[1], frame.shape[0]) if color else None
-            send_state = sender.update(color, point)
+            with hub._lock:
+                enabled = hub.send_enabled and revision == hub.revision
+                send_state = sender.update(color if enabled else "", point)
+            if not enabled:
+                send_state = "preview"
+            objects = vision._detector.candidates if mode != "rings" else []
             tune = {
                 "detect_width": level.detect_width,
                 "preview_width": level.preview_width,
                 "jpeg_quality": level.jpeg_quality,
                 "target_fps": tuner.target_fps,
             }
-            jpeg = render_preview(
-                frame, objects, rings, fps, selected_index, camera_config, mode,
-                level.preview_width, level.jpeg_quality, target,
-            )
+            diagnostic = draw_shape_segments(frame, objects, target if send_state == "sending" else None)
+            if mode != "objects":
+                diagnostic = draw_ring_debug(diagnostic, rings)
+            mask = vision._detector.color_mask
+            edges = vision._detector.edge_view
+            if mask is None:
+                import numpy as np
+                mask = np.zeros(frame.shape[:2], dtype=np.uint8)
+                edges = mask.copy()
+            previews = {"raw": frame, "mask": mask, "edges": edges, "result": diagnostic}
+            jpeg = encode_jpeg(preview_frame(previews[selected_view], level.preview_width), level.jpeg_quality)
             status = vision_status(frame.shape, fps, selected_index, mode, objects, rings,
                                    sender.error if send_state == "error" else "",
                                    color, target, send_state, tune, motion_name)
+            status["actual_send_target"] = status["target"] if send_state == "sending" else None
+            status["frame_time_ns"] = time.time_ns()
+            with hub._lock:
+                hub.capture_frames = (raw_frame.copy(), frame.copy(), mask.copy(), edges.copy(),
+                                      diagnostic, copy.deepcopy(status), settings)
             hub.publish(jpeg, status)
     except Exception as exc:
         LOG.error("视觉网页相机中断：%s", exc)
@@ -496,6 +631,8 @@ def _camera_loop(config: dict[str, Any], camera_index: int | None, mode: str,
             hub.publish(encode_jpeg(image), status)
         except Exception:
             LOG.exception("视觉网页无法生成错误画面")
+        if "sender" in locals():
+            sender.stop()
         stop.wait()
     finally:
         if "sender" in locals():
@@ -506,7 +643,7 @@ def _camera_loop(config: dict[str, Any], camera_index: int | None, mode: str,
 
 def run_vision_web(config: dict[str, Any], camera_index: int | None, mode: str,
                    host: str, port: int, config_path: Path | None = None) -> int:
-    """启动浏览器预览。未选择颜色时不创建串口；选定颜色后才发送上层圆心。"""
+    """启动预览；显式打开网页发送开关后才发送已验证且稳定的顶面中心。"""
     if not 1 <= int(port) <= 65535:
         LOG.error("网页端口必须在 1..65535")
         return 2

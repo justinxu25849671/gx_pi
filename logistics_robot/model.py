@@ -32,10 +32,14 @@ class DetectedObject:
     circle_x_px: float | None = None
     circle_y_px: float | None = None
     track_id: int | None = None
+    top_valid: bool = False
+    top_ellipse: tuple | None = None
+    top_reason: str = "顶面未验证"
+    top_metrics: tuple = ()
 
     @property
     def circle_center_px(self) -> tuple[float, float]:
-        """最小外接圆圆心；未单独测量时退回轮廓重心。"""
+        """兼容字段：已验证顶面的跟踪中心；发送前必须检查 top_valid。"""
         if self.circle_x_px is None or self.circle_y_px is None:
             return (self.center_x_px, self.center_y_px)
         return (self.circle_x_px, self.circle_y_px)

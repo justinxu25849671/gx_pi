@@ -98,13 +98,18 @@
 <body>
   <header>
     <div>
-      <h1>处理后的相机画面</h1>
-      <p>画面中心为 (0, 0)，x 向右为正，y 向下为正。选择颜色后分割该颜色圆形，并把画面最上层的稳定圆心发给下位机。</p>
+      <h1>物料顶面识别</h1>
+      <p>画面中心为 (0, 0)，x 向右为正，y 向下为正。默认只预览。顶面验证通过且连续稳定后可发送；失败立即停止新坐标。</p>
     </div>
   </header>
   <main>
     <section class="stage">
-      <img id="view" alt="处理后的相机画面" src="/stream.mjpg">
+      <div class="colors" style="margin-bottom:10px">
+        <label>视图 <select id="viewMode"><option value="raw">原始画面</option><option value="mask">颜色分割</option><option value="edges">顶面边缘</option><option value="result" selected>识别结果</option></select></label>
+        <a href="/capture.zip" download="vision-capture.zip">保存原图与诊断包</a>
+      </div>
+      <p>物料外轮廓：本色 · 物料中心：紫十字 · 顶面：黄椭圆/十字 · 实际发送：白圈 SEND</p>
+      <img id="view" alt="物料顶面识别" src="/stream.mjpg">
     </section>
     <aside class="panel">
       <div class="meta" id="meta">等待画面…</div>
@@ -119,12 +124,21 @@
       <h2>学习物料</h2>
       <div class="meta" id="learn">先点选红、黄、蓝或绿，再在画面上点一下该物料。学到的颜色会立刻用于识别，并写入配置。</div>
       <div class="error" id="error"></div>
+      <h2>识别状态</h2><div id="recognition" role="status">未发现物料</div>
       <h2>发送目标</h2>
+      <label><input type="checkbox" id="sendEnabled">允许发送已验证顶面坐标</label>
+      <p>更换颜色、学习或修改参数会自动关闭发送。</p>
       <div class="meta" id="target">未选择颜色，不发送</div>
       <h2>圆环圆心</h2>
       <ul id="rings"></ul>
-      <h2>物料圆心</h2>
+      <h2>物料与顶面中心</h2>
       <ul id="objects"></ul>
+      <details><summary>高级识别参数</summary><div id="parameters"></div>
+        <button id="applySettings">应用（仅预览）</button>
+        <button id="saveSettings">保存配置</button>
+        <button id="resetSettings">恢复识别默认值</button>
+        <p>恢复默认不修改已学习的 HSV、ROI 与相机配置；点击保存才写入文件。</p>
+      </details><div id="settingsMessage" role="status"></div>
     </aside>
   </main>
   <script>
@@ -133,8 +147,9 @@
     const rings = document.getElementById("rings");
     const targetBox = document.getElementById("target");
     const sendText = {
+      preview: "仅预览，不发送",
       idle: "未选择颜色，不发送",
-      waiting: "该颜色还没有稳定的上层圆形",
+      waiting: "等待通过验证且稳定的顶面",
       sending: "正在发送",
       aligned: "圆心已到画面中心，定位结束",
       error: "发送失败",
@@ -202,10 +217,12 @@
         frameSize = { width: Number(status.width) || 0, height: Number(status.height) || 0 };
         selectedColor = status.locate_color || "";
         markColor(selectedColor);
-        const target = status.target;
+        document.getElementById("recognition").textContent = status.recognition_state || "未发现物料";
+        document.getElementById("sendEnabled").checked = !!status.send_enabled;
+        const target = status.actual_send_target;
         const state = sendText[status.send_state] || "未发送";
         targetBox.textContent = target
-          ? `#${target.track_id ?? "?"} ${target.color} 上层圆形 xy = (${target.x}, ${target.y}) · ${state}`
+          ? `#${target.track_id ?? "?"} ${target.color} 顶面 xy = (${target.x}, ${target.y}) · ${state}`
           : state;
         if (status.error) {
           errorBox.style.display = "block";
@@ -221,8 +238,8 @@
         ));
         list(objects, status.objects, "当前没有物料", (item) => row(
           `#${item.track_id ?? "?"} ${item.color}`,
-          `xy = (${item.x}, ${item.y})`,
-          { ok: item.stable, text: item.stable ? `稳定 ${item.stable_frames} 帧` : `未稳定 ${item.stable_frames} 帧` }
+          `物料像素 = (${(item.material_center || []).map(v=>v.toFixed(1)).join(", ")})；顶面像素 = ${item.top_valid && item.top_center ? item.top_center.map(v=>v.toFixed(1)).join(", ") : "未确认"}`,
+          { ok: item.stable && item.top_valid, text: item.reason || (item.stable ? `可发送 · 稳定 ${item.stable_frames} 帧` : "顶面已确认但未稳定") }
         ));
       } catch (error) {
         errorBox.style.display = "block";
@@ -264,6 +281,48 @@
       });
     });
 
+    const labels = {
+      min_area_px: "物料最小面积 px²", max_area_px: "物料最大面积 px²",
+      min_circularity: "透视归一化圆形筛选阈值 (0–1)", stable_frames: "连续稳定帧数",
+      stable_center_tolerance_px: "中心稳定容差 px", morphology_kernel_px: "去噪核大小 px",
+      top_canny_low: "边缘低阈值", top_canny_high: "边缘高阈值",
+      top_min_axis_ratio: "最小短轴/长轴", top_min_area_ratio: "顶面/物料最小面积比",
+      top_max_area_ratio: "顶面/物料最大面积比", top_edge_tolerance_px: "边缘贴合容差 px",
+      top_min_edge_support: "最小边缘贴合率", top_min_arc_coverage: "最小圆弧覆盖率",
+      top_border_margin_px: "画面边缘禁发距离 px", top_fit_trials: "拟合尝试次数"
+    };
+    async function post(path, payload) {
+      const response = await fetch(path, {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)});
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || "操作失败");
+      return result;
+    }
+    function showError(error) { document.getElementById("settingsMessage").textContent = error.message; }
+    async function loadSettings() {
+      const response = await fetch("/settings");
+      if (!response.ok) throw new Error("读取配置失败");
+      const values = await response.json();
+      const node = document.getElementById("parameters"); node.replaceChildren();
+      for (const [key, value] of Object.entries(values)) {
+        const label = document.createElement("label"); label.style.display = "block"; label.style.margin = "8px 0";
+        label.textContent = labels[key] || key;
+        const input = document.createElement("input"); input.type="number"; input.step="any";
+        input.value=value; input.dataset.key=key; input.style.width="85px";
+        label.appendChild(input); node.appendChild(label);
+      }
+    }
+    async function updateSettings(save, reset) {
+      const values = {};
+      document.querySelectorAll("#parameters input").forEach(input=>values[input.dataset.key]=Number(input.value));
+      await post("/settings", {values,save,reset}); await loadSettings();
+      document.getElementById("settingsMessage").textContent = save ? "配置已保存，发送已关闭" : "参数已应用，发送已关闭";
+    }
+    document.getElementById("viewMode").onchange = event=>post("/controls",{view:event.target.value}).catch(showError);
+    document.getElementById("sendEnabled").onchange = event=>post("/controls",{send_enabled:event.target.checked}).catch(showError);
+    document.getElementById("applySettings").onclick = ()=>updateSettings(false,false).catch(showError);
+    document.getElementById("saveSettings").onclick = ()=>updateSettings(true,false).catch(showError);
+    document.getElementById("resetSettings").onclick = ()=>updateSettings(false,true).catch(showError);
+    loadSettings().catch(showError);
     refresh();
     setInterval(refresh, 300);
   </script>

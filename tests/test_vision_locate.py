@@ -26,9 +26,9 @@ class VisionLocateTests(unittest.TestCase):
             parse_locate_color("purple")
 
     def test_upper_stable_circle_is_sent(self):
-        lower = DetectedObject("blue", 80, 140, 4000, stable=True, stable_frames=8,
+        lower = DetectedObject("blue", 80, 140, 4000, top_valid=True, stable=True, stable_frames=8,
                                circle_x_px=80, circle_y_px=140)
-        upper = DetectedObject("blue", 100, 40, 5000, stable=True, stable_frames=12,
+        upper = DetectedObject("blue", 100, 40, 5000, top_valid=True, stable=True, stable_frames=12,
                                circle_x_px=100, circle_y_px=40)
         brief = DetectedObject("blue", 90, 10, 3000, stable=False,
                                circle_x_px=90, circle_y_px=10)
