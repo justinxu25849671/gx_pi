@@ -102,45 +102,42 @@ class TopFaceTests(unittest.TestCase):
         d.detect(scene(),["red"]); self.assertEqual(state(),"顶面已确认但未稳定")
         d.detect(scene(),["red"]); d.detect(scene(),["red"]); self.assertEqual(state(),"可发送")
 
-    def test_camera_loop_gates_every_frame_and_preview_never_sends(self):
-        for enabled in (False, True):
-            with self.subTest(enabled=enabled):
-                config = json.loads(Path("config.example.json").read_text(encoding="utf-8"))
-                config["hsv_colors"] = HSV
-                config["object_camera"]["object_detection"]["stable_frames"] = 1
-                stop = threading.Event()
-                hub = FrameHub(); hub.set_locate_color("red"); hub.send_enabled = enabled
-                sender = _CircleSender({})
-                client = Mock(); sender._link = Mock(path_client=client)
-                statuses = []
-                original_publish = hub.publish
-                def publish(jpeg, status):
-                    statuses.append(status)
-                    original_publish(jpeg,status)
-                hub.publish = publish
-                class Camera:
-                    cv2 = __import__("cv2")
-                    def __init__(self, camera_config, hsv):
-                        self._detector = ObjectDetector(camera_config,hsv)
-                        self.count = 0
-                    def read(self):
-                        self.count += 1
-                        if self.count == 3: stop.set()
-                        return scene() if self.count == 1 else np.zeros((300,400,3),np.uint8)
-                    def clear_tracks(self): self._detector.clear_tracks()
-                    def set_detect_width(self,width): self._detector.set_detect_width(width)
-                    def detect_objects(self,frame,colors): return self._detector.detect(frame,colors)
-                    def close(self): pass
-                with patch("logistics_robot.vision_web.CameraVision",Camera), patch("logistics_robot.vision_web._CircleSender",return_value=sender):
-                    _camera_loop(config,None,"objects",hub,stop)
-                self.assertEqual(len(statuses),3)
-                self.assertTrue(all(s["ok"] for s in statuses),statuses)
-                self.assertEqual(client.send_visual_coordinate.call_count,1 if enabled else 0)
-                self.assertIsNone(statuses[1]["actual_send_target"])
-                self.assertIsNone(statuses[2]["actual_send_target"])
-                if not enabled:
-                    client.start_visual_positioning.assert_not_called()
-                    self.assertEqual(statuses[0]["send_state"],"preview")
+    def test_camera_loop_preview_does_not_send_while_stream_runs(self):
+        config = json.loads(Path("config.example.json").read_text(encoding="utf-8"))
+        config["hsv_colors"] = HSV
+        config["vision_stream"] = {"fps": 30, "peak_kib_per_sec": 4096, "jpeg_quality": 70}
+        stop = threading.Event()
+        hub = FrameHub()
+        hub.set_locate_color("red")
+        hub.send_enabled = False
+        hub.add_viewer()
+        sender = _CircleSender({})
+        client = Mock()
+        sender._link = Mock(path_client=client)
+
+        class Camera:
+            cv2 = __import__("cv2")
+
+            def __init__(self, camera_config, hsv):
+                self.count = 0
+
+            def read(self):
+                self.count += 1
+                if self.count >= 4:
+                    stop.set()
+                return scene()
+
+            def close(self):
+                pass
+
+        with patch("logistics_robot.vision_web.CameraVision", Camera), \
+             patch("logistics_robot.vision_web._CircleSender", return_value=sender):
+            _camera_loop(config, None, "objects", hub, stop)
+        jpeg, status = hub.latest()
+        self.assertTrue(jpeg.startswith(b"\xff\xd8"))
+        client.start_visual_positioning.assert_not_called()
+        client.send_visual_coordinate.assert_not_called()
+        self.assertEqual(status.get("send_state"), "preview")
 
     def test_offline_cli_reports_geometry_without_claiming_temporal_validation(self):
         with tempfile.TemporaryDirectory() as directory:

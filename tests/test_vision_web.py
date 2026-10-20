@@ -18,9 +18,10 @@ except ImportError:
 from logistics_robot import app
 from logistics_robot.model import DetectedObject
 from logistics_robot.ring_detection import RingCandidate
+from logistics_robot.material_learn import hsv_bounds_from_rgb
 from logistics_robot.vision_web import (
-    FrameHub, VisionWebServer, _CircleSender, annotate_vision_frame, encode_jpeg,
-    render_preview, vision_status,
+    FrameHub, VisionWebServer, _CircleSender, annotate_vision_frame, black_white_mask,
+    encode_jpeg, render_preview, vision_status,
 )
 
 
@@ -46,6 +47,16 @@ class VisionWebTests(unittest.TestCase):
         self.assertTrue(np.array_equal(frame, original))
         self.assertFalse(np.array_equal(annotated, original))
         self.assertTrue(encode_jpeg(annotated).startswith(b"\xff\xd8"))
+
+    def test_black_white_mask_keeps_the_tuned_color_only(self):
+        frame = np.zeros((80, 120, 3), dtype=np.uint8)
+        cv2 = __import__("cv2")
+        cv2.circle(frame, (30, 40), 16, (40, 40, 230), -1)
+        cv2.circle(frame, (90, 40), 16, (230, 80, 40), -1)
+        bounds = hsv_bounds_from_rgb(230, 40, 40, 48, 165)
+        image = black_white_mask(frame, {"red": bounds}, "red")
+        self.assertGreater(int(image[40, 30, 0]), 200)
+        self.assertLess(int(image[40, 90, 0]), 20)
 
     def test_preview_follows_the_current_frame(self):
         frame = np.zeros((48, 64, 3), dtype=np.uint8)
@@ -74,10 +85,13 @@ class VisionWebTests(unittest.TestCase):
             self.assertIn("圆环圆心", page)
             self.assertIn("发送目标", page)
             self.assertIn("学习物料", page)
-            self.assertIn("静止少算", page)
+            self.assertIn("峰值传输", page)
             self.assertIn("track_id", page)
             self.assertIn("识别颜色", page)
             self.assertIn('data-color="red"', page)
+            self.assertIn("RGB 调色", page)
+            self.assertIn("黑白画面", page)
+            self.assertIn('id="rgbMap"', page)
             with urlopen(base + "/snapshot.jpg", timeout=2) as response:
                 jpeg = response.read()
                 self.assertEqual(response.headers.get_content_type(), "image/jpeg")
@@ -104,6 +118,18 @@ class VisionWebTests(unittest.TestCase):
             with urlopen(request, timeout=2) as response:
                 changed = json.loads(response.read().decode("utf-8"))
             self.assertEqual(changed["color"], "blue")
+            with urlopen(base + "/stream-settings", timeout=2) as response:
+                limits = json.loads(response.read().decode("utf-8"))
+            self.assertEqual(limits["fps"], 12)
+            stream_request = Request(
+                base + "/stream",
+                data=json.dumps({"fps": 8, "peak_kib_per_sec": 256}).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with urlopen(stream_request, timeout=2) as response:
+                self.assertEqual(json.loads(response.read().decode("utf-8"))["ok"], True)
+            self.assertEqual(hub.stream_limits()[:2], (8, 256))
             with urlopen(base + "/status.json", timeout=2) as response:
                 payload = json.loads(response.read().decode("utf-8"))
             self.assertEqual(payload["locate_color"], "blue")

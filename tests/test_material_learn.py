@@ -16,7 +16,7 @@ except ImportError:
     cv2 = None
     np = None
 
-from logistics_robot.material_learn import hsv_bounds_from_bgr
+from logistics_robot.material_learn import hsv_bounds_from_bgr, hsv_bounds_from_rgb
 from logistics_robot.vision_web import FrameHub, VisionWebServer
 
 
@@ -48,6 +48,62 @@ class MaterialLearnTests(unittest.TestCase):
         self.assertEqual(bounds[0][0], 0)
         self.assertEqual(bounds[1][3], 179)
         self.assertLess(bounds[0][2], 160)
+
+    def test_rgb_red_stays_above_the_value_floor(self):
+        bounds = hsv_bounds_from_rgb(230, 40, 40, 48, 165)
+        self.assertGreaterEqual(len(bounds), 1)
+        self.assertTrue(any(item[0] == 0 for item in bounds))
+        for item in bounds:
+            self.assertGreaterEqual(item[2], 165)
+            self.assertLessEqual(item[0], item[3])
+
+    def test_rgb_green_is_one_range_around_its_hue(self):
+        bounds = hsv_bounds_from_rgb(40, 210, 70, 48, 115)
+        self.assertEqual(len(bounds), 1)
+        low, _s, value, high, _s2, _v2 = bounds[0]
+        self.assertLessEqual(low, 60)
+        self.assertGreaterEqual(high, 60)
+        self.assertGreaterEqual(value, 115)
+
+    def test_http_rgb_switches_the_view_to_black_and_white(self):
+        config = {"hsv_colors": {
+            "red": [[0, 68, 165, 18, 255, 255], [157, 68, 165, 179, 255, 255]],
+            "yellow": [[18, 90, 145, 40, 255, 255]],
+            "blue": [[95, 80, 125, 130, 255, 255]],
+            "green": [[42, 70, 115, 85, 255, 255]],
+        }}
+        hub = FrameHub()
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "config.json"
+            path.write_text("{}\n", encoding="utf-8")
+            server = VisionWebServer(hub, "127.0.0.1", 0, config, path)
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            try:
+                request = Request(
+                    f"http://127.0.0.1:{server.port}/rgb",
+                    data=json.dumps({
+                        "color": "red", "r": 230, "g": 40, "b": 40, "tolerance": 48, "save": True,
+                    }).encode("utf-8"),
+                    headers={"Content-Type": "application/json"},
+                    method="POST",
+                )
+                with urlopen(request, timeout=2) as response:
+                    payload = json.loads(response.read().decode("utf-8"))
+                self.assertTrue(payload["ok"])
+                self.assertEqual(payload["view"], "mask")
+                self.assertEqual(hub.view, "mask")
+                self.assertEqual(hub.get_locate_color(), "red")
+                self.assertTrue(all(item[2] >= 165 for item in config["hsv_colors"]["red"]))
+                saved = json.loads(path.read_text(encoding="utf-8"))
+                self.assertEqual(saved["hsv_colors"]["red"], payload["bounds"])
+                with urlopen(f"http://127.0.0.1:{server.port}/rgb", timeout=2) as response:
+                    listed = json.loads(response.read().decode("utf-8"))
+                self.assertIn("red", listed["colors"])
+            finally:
+                hub.close()
+                server.shutdown()
+                thread.join(timeout=2)
 
     def test_pale_patch_is_rejected(self):
         gray = np.full((36, 36, 3), 40, dtype=np.uint8)

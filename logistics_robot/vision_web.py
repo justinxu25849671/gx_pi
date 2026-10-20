@@ -16,17 +16,19 @@ from typing import Any
 from urllib.parse import urlsplit
 
 from .calibration import FrameRectifier
-from .material_learn import crop_patch, hsv_bounds_from_bgr, save_config
+from .direct_stream import FrameSlot, StreamBudget, normalize_stream_limits, stream_limits_from
+from .material_learn import (
+    crop_patch, hsv_bounds_from_bgr, hsv_bounds_from_rgb, rgb_sample_from_bounds, save_config,
+)
 from .model import DetectedObject
-from .motion_gate import MotionGate
 from .ring_detection import RingCandidate, RingDetector, draw_ring_debug
-from .stream_tuner import StreamTuner
-from .vision import CameraVision, draw_object_debug_frame, draw_shape_segments, image_origin_px
+from .vision import MATERIAL_COLORS, CameraVision, draw_object_debug_frame, draw_shape_segments, image_origin_px
 from .vision_locate import parse_locate_color, select_upper_circle, upper_circle_coordinate
 
 
 LOG = logging.getLogger(__name__)
 _HTML_PATH = Path(__file__).resolve().parent / "web" / "index.html"
+COLOR_VALUE_FLOOR = {"red": 165, "yellow": 145, "blue": 125, "green": 115}
 
 
 class FrameHub:
@@ -49,6 +51,11 @@ class FrameHub:
         self.send_enabled = False
         self.revision = 0
         self.capture_frames = None
+        self.stream_fps = 12.0
+        self.stream_peak_kib = 512.0
+        self.stream_quality = 70
+        self.preview_width = 960
+        self._viewers = 0
 
 
     def publish(self, jpeg: bytes, status: dict[str, Any]) -> None:
@@ -68,6 +75,61 @@ class FrameHub:
     def get_locate_color(self) -> str:
         with self._lock:
             return self._locate_color
+
+    def set_stream_limits(self, fps, peak_kib_per_sec, quality=70) -> None:
+        fps_value, peak_value, quality_value = normalize_stream_limits(
+            fps, peak_kib_per_sec, quality)
+        with self._lock:
+            self.stream_fps = fps_value
+            self.stream_peak_kib = peak_value
+            self.stream_quality = quality_value
+
+    def stream_limits(self) -> tuple[float, float, int]:
+        with self._lock:
+            return self.stream_fps, self.stream_peak_kib, self.stream_quality
+
+    def set_preview_width(self, width: int) -> None:
+        value = int(width)
+        if not 320 <= value <= 1920:
+            raise ValueError("预览宽度必须在 320..1920")
+        with self._lock:
+            self.preview_width = value
+
+    def preview_width_px(self) -> int:
+        with self._lock:
+            return int(self.preview_width)
+
+    def add_viewer(self) -> int:
+        with self._lock:
+            self._viewers += 1
+            return self._viewers
+
+    def remove_viewer(self) -> None:
+        with self._lock:
+            self._viewers = max(0, self._viewers - 1)
+
+    def viewers(self) -> int:
+        with self._lock:
+            return self._viewers
+
+    def publish_video(self, jpeg: bytes, info: dict[str, Any]) -> None:
+        """只更新原画 JPEG。不改识别结果。"""
+        with self._lock:
+            self._jpeg = jpeg
+            tune = dict(self._status.get("tune") or {})
+            tune.update(info.get("tune") or {})
+            self._status.update(info)
+            self._status["tune"] = tune
+            self._generation += 1
+            self._lock.notify_all()
+
+    def publish_recognition(self, info: dict[str, Any]) -> None:
+        """只更新识别结果，不推动视频流，避免两条线互相等待。"""
+        with self._lock:
+            tune = dict(self._status.get("tune") or {})
+            tune.update(info.get("tune") or {})
+            self._status.update(info)
+            self._status["tune"] = tune
 
     def latest(self) -> tuple[bytes, dict[str, Any]]:
         with self._lock:
@@ -284,6 +346,24 @@ def render_preview(frame, objects, rings, fps, camera_index, camera_config, mode
     return encode_jpeg(preview_frame(annotated, preview_width), jpeg_quality)
 
 
+def black_white_mask(frame, hsv_colors, color: str = ""):
+    """色域命中的像素为白，其余为黑。"""
+    import cv2
+    import numpy as np
+    from .circle_select import color_mask
+    names = (color,) if color and color in (hsv_colors or {}) else tuple(hsv_colors or {})
+    mask = None
+    for name in names:
+        bounds = (hsv_colors or {}).get(name) or []
+        if not bounds:
+            continue
+        partial = color_mask(frame, bounds, 3)
+        mask = partial if mask is None else cv2.bitwise_or(mask, partial)
+    if mask is None:
+        mask = np.zeros(frame.shape[:2], np.uint8)
+    return cv2.cvtColor(mask, cv2.COLOR_GRAY2BGR)
+
+
 def encode_jpeg(frame, quality: int = 80) -> bytes:
     import cv2
     ok, encoded = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), int(quality)])
@@ -354,6 +434,23 @@ def _handler(hub: FrameHub, html: bytes, config: dict[str, Any] | None,
                 with hub._lock:
                     current = {**setting_defaults, **(config or {}).get("object_camera", {}).get("object_detection", {})}
                 self._send(200, "application/json", json.dumps({k: current[k] for k in setting_defaults}).encode())
+            elif path == "/rgb":
+                colors = {}
+                with hub._lock:
+                    hsv = dict((config or {}).get("hsv_colors") or {})
+                for name, bounds in hsv.items():
+                    red, green, blue = rgb_sample_from_bounds(bounds)
+                    colors[name] = {
+                        "r": red, "g": green, "b": blue, "tolerance": 48, "bounds": bounds,
+                    }
+                body = json.dumps({"ok": True, "colors": colors}, ensure_ascii=False).encode("utf-8")
+                self._send(200, "application/json; charset=utf-8", body)
+            elif path == "/stream-settings":
+                fps, peak, quality = hub.stream_limits()
+                body = json.dumps({
+                    "fps": fps, "peak_kib_per_sec": peak, "jpeg_quality": quality,
+                }).encode("utf-8")
+                self._send(200, "application/json; charset=utf-8", body)
             elif path == "/capture.zip":
                 with hub._lock:
                     capture = hub.capture_frames
@@ -412,6 +509,8 @@ def _handler(hub: FrameHub, html: bytes, config: dict[str, Any] | None,
                     self._send(200, "application/json", b'{"ok":true}')
                 except ValueError as exc:
                     self._send(400, "application/json", json.dumps({"error": str(exc)}).encode())
+            elif path == "/stream":
+                self._set_stream(payload)
             elif path == "/settings":
                 try:
                     if config is None:
@@ -456,8 +555,37 @@ def _handler(hub: FrameHub, html: bytes, config: dict[str, Any] | None,
                 self._set_color(payload)
             elif path == "/learn":
                 self._learn(payload)
+            elif path == "/rgb":
+                self._set_rgb(payload)
             else:
                 self.send_error(404)
+
+        def _set_stream(self, payload: dict[str, Any]) -> None:
+            try:
+                current_fps, current_peak, current_quality = hub.stream_limits()
+                fps, peak, quality = normalize_stream_limits(
+                    payload.get("fps", current_fps),
+                    payload.get("peak_kib_per_sec", current_peak),
+                    payload.get("jpeg_quality", current_quality),
+                )
+                hub.set_stream_limits(fps, peak, quality)
+                if config is not None:
+                    updated = copy.deepcopy(config)
+                    previous = dict(updated.get("vision_stream") or {})
+                    updated["vision_stream"] = {
+                        "fps": fps, "peak_kib_per_sec": peak, "jpeg_quality": quality,
+                        "preview_width": int(previous.get("preview_width", hub.preview_width_px())),
+                    }
+                    if payload.get("save"):
+                        if config_path is None:
+                            raise ValueError("未指定配置文件路径")
+                        save_config(config_path, updated)
+                    config["vision_stream"] = updated["vision_stream"]
+            except (TypeError, ValueError, OSError) as exc:
+                body = json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False).encode("utf-8")
+                self._send(400, "application/json; charset=utf-8", body)
+                return
+            self._send(200, "application/json; charset=utf-8", b'{"ok":true}')
 
         def _set_color(self, payload: dict[str, Any]) -> None:
             try:
@@ -491,6 +619,45 @@ def _handler(hub: FrameHub, html: bytes, config: dict[str, Any] | None,
                               ensure_ascii=False).encode("utf-8")
             self._send(200, "application/json; charset=utf-8", body)
 
+        def _set_rgb(self, payload: dict[str, Any]) -> None:
+            try:
+                color = parse_locate_color(str(payload.get("color", "")))
+                if config is None or "hsv_colors" not in config:
+                    raise RuntimeError("没有可写入的颜色配置")
+                red = _rgb_channel(payload.get("r"))
+                green = _rgb_channel(payload.get("g"))
+                blue = _rgb_channel(payload.get("b"))
+                tolerance = int(payload.get("tolerance", 48))
+                if not 8 <= tolerance <= 120:
+                    raise ValueError("容差必须在 8..120")
+                bounds = hsv_bounds_from_rgb(
+                    red, green, blue, tolerance, COLOR_VALUE_FLOOR.get(color, 0))
+                with hub._lock:
+                    config["hsv_colors"][color] = bounds
+                    hub.view = "mask"
+                    hub._locate_color = color
+                    hub.send_enabled = False
+                    hub._reset_tracks = True
+                    hub.revision += 1
+                    if payload.get("save"):
+                        if config_path is None:
+                            raise ValueError("未指定配置文件路径")
+                        save_config(config_path, config)
+            except (TypeError, ValueError, OSError) as exc:
+                message = str(exc) or "颜色无效"
+                body = json.dumps({"ok": False, "error": message}, ensure_ascii=False).encode("utf-8")
+                self._send(400, "application/json; charset=utf-8", body)
+                return
+            except RuntimeError as exc:
+                body = json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False).encode("utf-8")
+                self._send(409, "application/json; charset=utf-8", body)
+                return
+            body = json.dumps({
+                "ok": True, "color": color, "r": red, "g": green, "b": blue,
+                "tolerance": tolerance, "bounds": bounds, "view": "mask",
+            }, ensure_ascii=False).encode("utf-8")
+            self._send(200, "application/json; charset=utf-8", body)
+
         def _send(self, status: int, content_type: str, body: bytes) -> None:
             self.send_response(status)
             self.send_header("Content-Type", content_type)
@@ -504,6 +671,7 @@ def _handler(hub: FrameHub, html: bytes, config: dict[str, Any] | None,
             self.send_header("Content-Type", "multipart/x-mixed-replace; boundary=frame")
             self.send_header("Cache-Control", "no-store")
             self.end_headers()
+            hub.add_viewer()
             generation = 0
             try:
                 while True:
@@ -520,11 +688,134 @@ def _handler(hub: FrameHub, html: bytes, config: dict[str, Any] | None,
                     self.wfile.flush()
             except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
                 return
+            finally:
+                hub.remove_viewer()
 
         def log_message(self, fmt: str, *args) -> None:
             LOG.debug("视觉网页 %s", fmt % args)
 
     return Handler
+
+
+
+def _recognize_loop(slot: FrameSlot, hub: FrameHub, config: dict[str, Any], mode: str,
+                    sender: _CircleSender, stop: threading.Event, cv2_module,
+                    camera_index: int) -> None:
+    """原画识别。只读最新帧，不等待网页编码。"""
+    cv2_module.setNumThreads(1)
+    from .circle_select import CircleTracker, recognize_frame
+    tracker = CircleTracker()
+    ring_detector = RingDetector(config["ring_detection"], cv2_module) if mode != "objects" else None
+    seen = 0
+    ring_tick = 0
+    cached_rings: list[RingCandidate] = []
+    previous = time.perf_counter()
+    while not stop.is_set():
+        item = slot.wait_next(seen, 0.2)
+        if item is None:
+            break
+        seen, frame = item
+        if frame is None:
+            continue
+        try:
+            with hub._lock:
+                color = hub._locate_color
+                revision = hub.revision
+                reset = hub._reset_tracks
+                hub._reset_tracks = False
+                hsv = copy.deepcopy(config.get("hsv_colors", {}))
+                detection = dict(config["object_camera"]["object_detection"])
+                enabled = hub.send_enabled and revision == hub.revision
+            if reset:
+                tracker.clear()
+                if mode != "objects":
+                    ring_detector = RingDetector(config["ring_detection"], cv2_module)
+            now = time.perf_counter()
+            elapsed = now - previous
+            previous = now
+            recognition_fps = 1.0 / elapsed if elapsed > 0 else 0.0
+            colors = (color,) if color else MATERIAL_COLORS
+            objects = recognize_frame(frame, colors, hsv, detection, tracker) if mode != "rings" else []
+            rings = cached_rings
+            if ring_detector is not None and (reset or ring_tick % 3 == 0):
+                rings = ring_detector.detect(frame, None, color or None, hsv)
+                cached_rings = rings
+            ring_tick += 1
+            target = select_upper_circle(objects) if color else None
+            point = upper_circle_coordinate(objects, frame.shape[1], frame.shape[0]) if color else None
+            send_state = sender.update(color if enabled else "", point)
+            if not enabled:
+                send_state = "preview"
+            fps_limit, peak_limit, quality_limit = hub.stream_limits()
+            status = vision_status(frame.shape, recognition_fps, camera_index, mode, objects, rings,
+                                   sender.error if send_state == "error" else "",
+                                   color, target, send_state, {}, "recognize")
+            status.pop("fps", None)
+            status["tune"] = {
+                "recognition_fps": round(recognition_fps, 2),
+                "target_fps": fps_limit,
+                "peak_kib_per_sec": peak_limit,
+                "jpeg_quality": quality_limit,
+            }
+            status["actual_send_target"] = status["target"] if send_state == "sending" else None
+            hub.publish_recognition(status)
+        except Exception:
+            LOG.exception("视觉识别中断，传输继续")
+
+
+def _stream_loop(slot: FrameSlot, hub: FrameHub, config: dict[str, Any],
+                 stop: threading.Event) -> None:
+    """有人观看才编码一帧预览。没人看就丢弃，不占用识别。"""
+    try:
+        import cv2
+        cv2.setNumThreads(1)
+    except ImportError:
+        pass
+    fps, peak, quality = hub.stream_limits()
+    budget = StreamBudget(fps, peak, quality)
+    seen = 0
+    while not stop.is_set():
+        if hub.viewers() <= 0:
+            if stop.wait(0.1):
+                break
+            continue
+        fps, peak, quality = hub.stream_limits()
+        budget.configure(fps, peak, quality)
+        if not budget.wait_turn(stop):
+            break
+        item = slot.wait_next(seen, 0.2)
+        if item is None:
+            break
+        seen, frame = item
+        if frame is None:
+            continue
+        try:
+            with hub._lock:
+                view = hub.view
+                color = hub._locate_color
+                hsv = copy.deepcopy(config.get("hsv_colors", {})) if view == "mask" else None
+            image = preview_frame(frame, hub.preview_width_px())
+            if view == "mask":
+                image = black_white_mask(image, hsv, color)
+            jpeg = encode_jpeg(image, budget.encode_quality())
+        except Exception:
+            LOG.exception("预览编码失败")
+            continue
+        if not budget.accept(len(jpeg)):
+            continue
+        hub.publish_video(jpeg, {
+            "ok": True,
+            "fps": round(budget.measured_fps, 2),
+            "tune": {
+                "target_fps": budget.fps,
+                "peak_kib_per_sec": budget.peak_kib,
+                "jpeg_quality": budget.encode_quality(),
+                "bitrate_kib_s": round(budget.measured_kib, 1),
+                "dropped": budget.dropped,
+                "preview_width": int(image.shape[1]),
+                "viewers": hub.viewers(),
+            },
+        })
 
 
 def _camera_loop(config: dict[str, Any], camera_index: int | None, mode: str,
@@ -534,94 +825,35 @@ def _camera_loop(config: dict[str, Any], camera_index: int | None, mode: str,
         camera_config["index"] = camera_index
     selected_index = int(camera_config["index"])
     vision = None
+    slot = FrameSlot()
+    workers: list[threading.Thread] = []
+    sender = _CircleSender(config.get("serial", {}))
     try:
         vision = CameraVision(camera_config, config["hsv_colors"])
-        ring_detector = RingDetector(config["ring_detection"], vision.cv2) if mode != "objects" else None
+        try:
+            hub.set_stream_limits(*stream_limits_from(config))
+            hub.set_preview_width(int((config.get("vision_stream") or {}).get("preview_width", 960)))
+        except ValueError:
+            hub.set_stream_limits(12, 512, 70)
+            hub.set_preview_width(960)
+        vision.cv2.setNumThreads(1)
         rectifier = FrameRectifier(config["vision_calibration"].get("camera", {}), vision.cv2)
-        sender = _CircleSender(config.get("serial", {}))
-        tuner = StreamTuner(float(config.get("vision_stream", {}).get("target_fps", 12)))
-        motion_gate = MotionGate()
-        cached_rings: list[RingCandidate] = []
-        have_cache = False
-        force_detect = True
-        active_color = hub.get_locate_color()
-        previous = time.perf_counter()
+        workers = [
+            threading.Thread(
+                target=_recognize_loop, name="vision-recognize", daemon=True,
+                args=(slot, hub, config, mode, sender, stop, vision.cv2, selected_index),
+            ),
+            threading.Thread(
+                target=_stream_loop, name="vision-stream", daemon=True,
+                args=(slot, hub, config, stop),
+            ),
+        ]
+        for worker in workers:
+            worker.start()
         while not stop.is_set():
-            with hub._lock:
-                color = hub._locate_color
-                revision = hub.revision
-                settings = copy.deepcopy(config)
-                selected_view = hub.view
-                reset_tracks = hub._reset_tracks
-                hub._reset_tracks = False
-            vision._detector._config.update(settings["object_camera"]["object_detection"])
-            vision._detector._hsv_colors = settings["hsv_colors"]
-            if ring_detector is not None and color != active_color:
-                ring_detector = RingDetector(config["ring_detection"], vision.cv2)
-                active_color = color
-                force_detect = True
             raw_frame = vision.read()
             frame = rectifier.apply(raw_frame)
-            hub.remember_frame(frame)
-            if reset_tracks:
-                vision.clear_tracks()
-                force_detect = True
-            now = time.perf_counter()
-            elapsed = now - previous
-            previous = now
-            fps = 1.0 / elapsed if elapsed > 0 else 0.0
-            level = tuner.observe(fps)
-            vision.set_detect_width(level.detect_width)
-            if ring_detector is not None:
-                ring_detector.set_detect_width(level.detect_width)
-            sample = motion_gate.update(frame)
-            objects = (vision.detect_objects(frame, (color,) if color else None)
-                       if mode != "rings" else [])
-            if force_detect or not sample.reuse or not have_cache:
-                regions = None if force_detect else sample.regions
-                rings = (ring_detector.detect(frame, regions, color or None, config["hsv_colors"])
-                         if ring_detector else [])
-                cached_rings = rings
-                have_cache = True
-                force_detect = False
-                motion_name = "update"
-            else:
-                rings = cached_rings
-                motion_name = "hold"
-            target = select_upper_circle(objects) if color else None
-            point = upper_circle_coordinate(objects, frame.shape[1], frame.shape[0]) if color else None
-            with hub._lock:
-                enabled = hub.send_enabled and revision == hub.revision
-                send_state = sender.update(color if enabled else "", point)
-            if not enabled:
-                send_state = "preview"
-            objects = vision._detector.candidates if mode != "rings" else []
-            tune = {
-                "detect_width": level.detect_width,
-                "preview_width": level.preview_width,
-                "jpeg_quality": level.jpeg_quality,
-                "target_fps": tuner.target_fps,
-            }
-            diagnostic = draw_shape_segments(frame, objects, target if send_state == "sending" else None)
-            if mode != "objects":
-                diagnostic = draw_ring_debug(diagnostic, rings)
-            mask = vision._detector.color_mask
-            edges = vision._detector.edge_view
-            if mask is None:
-                import numpy as np
-                mask = np.zeros(frame.shape[:2], dtype=np.uint8)
-                edges = mask.copy()
-            previews = {"raw": frame, "mask": mask, "edges": edges, "result": diagnostic}
-            jpeg = encode_jpeg(preview_frame(previews[selected_view], level.preview_width), level.jpeg_quality)
-            status = vision_status(frame.shape, fps, selected_index, mode, objects, rings,
-                                   sender.error if send_state == "error" else "",
-                                   color, target, send_state, tune, motion_name)
-            status["actual_send_target"] = status["target"] if send_state == "sending" else None
-            status["frame_time_ns"] = time.time_ns()
-            with hub._lock:
-                hub.capture_frames = (raw_frame.copy(), frame.copy(), mask.copy(), edges.copy(),
-                                      diagnostic, copy.deepcopy(status), settings)
-            hub.publish(jpeg, status)
+            slot.publish(frame.copy())
     except Exception as exc:
         LOG.error("视觉网页相机中断：%s", exc)
         try:
@@ -631,14 +863,24 @@ def _camera_loop(config: dict[str, Any], camera_index: int | None, mode: str,
             hub.publish(encode_jpeg(image), status)
         except Exception:
             LOG.exception("视觉网页无法生成错误画面")
-        if "sender" in locals():
-            sender.stop()
+        sender.stop()
         stop.wait()
     finally:
-        if "sender" in locals():
-            sender.close()
+        stop.set()
+        slot.close()
+        for worker in workers:
+            worker.join(timeout=2.0)
+        sender.close()
         if vision is not None:
             vision.close()
+
+
+
+def _rgb_channel(value) -> int:
+    number = int(value)
+    if not 0 <= number <= 255:
+        raise ValueError("RGB 必须在 0..255")
+    return number
 
 
 def run_vision_web(config: dict[str, Any], camera_index: int | None, mode: str,

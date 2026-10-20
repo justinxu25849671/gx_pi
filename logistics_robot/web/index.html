@@ -3,146 +3,431 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>视觉定位画面</title>
+  <title>视觉定位</title>
   <style>
     :root {
-      color-scheme: light;
-      --bg: #f4f6f8;
-      --panel: #ffffff;
-      --line: #e3e8ee;
-      --text: #1c2430;
-      --muted: #5c6b7a;
-      --accent: #0b6bcb;
-      --ok: #0d7a45;
-      --warn: #9a6200;
+      --color-primary: #0096c7;
+      --color-bg: #f0f4f8;
+      --color-header-bg: #ffffff;
+      --color-widget-bg: #ffffff;
+      --color-widget-titlebar: rgba(0, 150, 199, 0.05);
+      --color-dock-bg: rgba(255, 255, 255, 0.72);
+      --color-dock-border: rgba(0, 150, 199, 0.15);
+      --text-primary: #1a3a4a;
+      --text-secondary: #4a7a8f;
+      --text-muted: #7faabb;
+      --border-color: rgba(0, 150, 199, 0.2);
+      --hover-bg: rgba(0, 150, 199, 0.06);
+      --glow-color: rgba(0, 150, 199, 0.12);
+      --bg-primary: #ffffff;
+      --bg-secondary: rgba(0, 150, 199, 0.04);
+      --bg-tertiary: rgba(0, 150, 199, 0.08);
+      --color-danger: #e74c3c;
+      --color-success: #2ecc71;
+      --color-warn: #e6a23c;
+      --header-height: 64px;
     }
     * { box-sizing: border-box; }
-    body {
+    html, body {
       margin: 0;
-      font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
-      background: var(--bg);
-      color: var(--text);
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+      background: var(--color-bg);
+      color: var(--text-primary);
     }
-    header {
+    button, select, input { font: inherit; color: inherit; }
+    .header-bar {
+      height: var(--header-height);
+      background: var(--color-header-bg);
+      border-bottom: 1px solid var(--border-color);
       display: flex;
+      align-items: center;
       justify-content: space-between;
-      gap: 16px;
-      align-items: baseline;
-      padding: 16px 20px 8px;
+      padding: 0 16px 0 0;
+      user-select: none;
     }
-    h1 { margin: 0; font-size: 20px; font-weight: 650; }
-    p { margin: 4px 0 0; color: var(--muted); font-size: 13px; }
-    main {
+    .brand { display: flex; align-items: center; gap: 12px; min-width: 0; }
+    .logo {
+      width: 56px;
+      height: var(--header-height);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: var(--color-primary);
+      flex-shrink: 0;
+    }
+    .logo svg { width: 36px; height: 36px; filter: drop-shadow(0 0 6px rgba(0, 150, 199, 0.45)); }
+    .brand h1 { margin: 0; font-size: 18px; font-weight: 600; line-height: 1.2; }
+    .brand p { margin: 2px 0 0; font-size: 12px; color: var(--text-muted); }
+    .dashboard { display: flex; align-items: center; gap: 18px; }
+    .block { display: flex; align-items: center; gap: 8px; }
+    .block-icon { width: 22px; height: 22px; color: var(--color-primary); flex-shrink: 0; }
+    .block-info { display: flex; flex-direction: column; line-height: 1.25; }
+    .block-row { font-size: 13px; font-variant-numeric: tabular-nums; }
+    .block-row.sub { font-size: 12px; color: var(--text-secondary); }
+    .lights { display: flex; gap: 6px; }
+    .light {
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      background: var(--text-muted);
+      opacity: 0.35;
+    }
+    .light.ok { background: var(--color-success); opacity: 1; box-shadow: 0 0 6px rgba(46, 204, 113, 0.55); }
+    .light.alarm { background: var(--color-danger); opacity: 1; }
+    .workspace {
+      height: calc(100% - var(--header-height));
       display: grid;
-      grid-template-columns: minmax(0, 1fr) 320px;
-      gap: 16px;
-      padding: 12px 20px 20px;
+      grid-template-columns: minmax(0, 1fr) 340px;
     }
-    .stage, .panel {
-      background: var(--panel);
-      border: 1px solid var(--line);
-      border-radius: 12px;
+    .widget {
+      display: flex;
+      flex-direction: column;
+      min-width: 0;
+      min-height: 0;
+      background: var(--color-widget-bg);
+      border-right: 1px solid var(--border-color);
     }
-    .stage { padding: 10px; min-height: 360px; }
+    .titlebar {
+      height: 32px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 0 10px;
+      background: var(--color-widget-titlebar);
+      border-bottom: 1px solid var(--border-color);
+      flex-shrink: 0;
+    }
+    .titlebar span { font-size: 13px; font-weight: 500; }
+    .titlebar a { margin-left: auto; font-size: 12px; color: var(--color-primary); text-decoration: none; }
+    .stage {
+      position: relative;
+      flex: 1;
+      min-height: 0;
+      background: #000;
+    }
+    .viewport { position: absolute; inset: 0; }
     img {
       display: block;
       width: 100%;
-      height: auto;
-      background: #f7f8fa;
-      border-radius: 8px;
+      height: 100%;
+      object-fit: contain;
+      background: #000;
       cursor: crosshair;
     }
-    .panel { padding: 14px 16px 18px; }
-    h2 { margin: 14px 0 8px; font-size: 15px; }
-    .meta { color: var(--muted); font-size: 13px; line-height: 1.6; }
+    canvas { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+    .switch {
+      position: absolute;
+      left: 8px;
+      top: 8px;
+      z-index: 3;
+      display: flex;
+      align-items: center;
+      height: 24px;
+      padding: 0 6px;
+      border-radius: 4px;
+      background: var(--color-dock-bg);
+      border: 1px solid var(--color-dock-border);
+      backdrop-filter: blur(2px);
+    }
+    .switch select {
+      border: 0;
+      background: transparent;
+      font-size: 11px;
+      font-weight: 700;
+      color: var(--text-secondary);
+      outline: none;
+    }
+    .badge {
+      position: absolute;
+      right: 8px;
+      bottom: 8px;
+      z-index: 3;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      height: 24px;
+      padding: 0 10px;
+      border-radius: 4px;
+      background: var(--color-dock-bg);
+      border: 1px solid var(--color-dock-border);
+      backdrop-filter: blur(2px);
+      font-size: 11px;
+      font-variant-numeric: tabular-nums;
+      color: var(--text-primary);
+    }
+    .badge .sep { width: 1px; height: 10px; background: var(--border-color); }
+    .badge .bad { color: var(--color-danger); font-weight: 700; }
+    .det {
+      position: absolute;
+      top: 6px;
+      right: 6px;
+      z-index: 2;
+      max-width: calc(100% - 12px);
+      max-height: 42%;
+      overflow: auto;
+      background: rgba(0, 0, 0, 0.6);
+      border-radius: 6px;
+    }
+    .det table { border-collapse: collapse; width: 360px; table-layout: fixed; }
+    .det th {
+      font-size: 10px;
+      font-weight: 600;
+      color: rgba(255, 255, 255, 0.55);
+      text-align: center;
+      padding: 4px 3px;
+    }
+    .det td {
+      font-size: 11px;
+      color: rgba(255, 255, 255, 0.85);
+      text-align: center;
+      padding: 3px;
+      font-variant-numeric: tabular-nums;
+      overflow: hidden;
+    }
+    .det .empty-cell { color: rgba(255, 255, 255, 0.55); padding: 8px 0; }
+    .det .fps { font-size: 9px; font-weight: 400; color: rgba(255, 255, 255, 0.5); margin-left: 3px; }
+    .side {
+      overflow: auto;
+      padding: 12px;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+    .card {
+      background: var(--bg-primary);
+      border: 1px solid var(--border-color);
+      border-radius: 5px;
+      padding: 12px 14px 14px;
+      box-shadow: 0 0 16px var(--glow-color);
+    }
+    .card h2 {
+      margin: 0 0 8px;
+      padding-bottom: 8px;
+      border-bottom: 1px solid var(--border-color);
+      font-size: 14px;
+      font-weight: 500;
+      color: var(--text-secondary);
+    }
+    .card p, .hint { margin: 8px 0 0; color: var(--text-secondary); font-size: 12px; line-height: 1.5; }
+    .item { display: flex; align-items: center; gap: 12px; padding: 8px 0; }
+    .item span { width: 72px; font-size: 14px; white-space: nowrap; }
+    .item input[type="number"], #parameters input {
+      width: 96px;
+      height: 28px;
+      padding: 0 8px;
+      border-radius: 4px;
+      border: 0;
+      background: var(--bg-primary);
+      box-shadow: 0 0 0 1px var(--border-color) inset;
+    }
+    .item input:focus, #parameters input:focus { outline: none; box-shadow: 0 0 0 1px var(--color-primary) inset, 0 0 6px var(--glow-color); }
+    .actions { display: flex; flex-wrap: wrap; gap: 8px; padding-top: 8px; }
+    .btn {
+      height: 32px;
+      padding: 4px 10px;
+      border-radius: 4px;
+      border: 1px solid var(--border-color);
+      background: transparent;
+      color: var(--text-secondary);
+      font-size: 13px;
+      cursor: pointer;
+    }
+    .btn:hover { border-color: var(--color-primary); color: var(--color-primary); }
+    .btn.primary { border: 0; background: var(--color-primary); color: #fff; }
+    .btn.primary:hover { background: #007eaa; }
+    .colors { display: flex; flex-wrap: wrap; gap: 6px; }
+    .colors button {
+      height: 28px;
+      padding: 0 12px;
+      border: 1px solid var(--border-color);
+      border-radius: 4px;
+      background: transparent;
+      color: var(--text-secondary);
+      cursor: pointer;
+    }
+    .colors button.active { background: var(--color-primary); border-color: var(--color-primary); color: #fff; }
+    .rgb-map { width: 100%; height: 120px; border-radius: 4px; cursor: crosshair; display: block; touch-action: none; background: #111; }
+    .rgb-row { display: flex; align-items: center; gap: 8px; margin-top: 8px; font-size: 13px; color: var(--text-secondary); }
+    .rgb-row span { width: 36px; }
+    .rgb-row input[type="range"] { flex: 1; accent-color: var(--color-primary); }
+    .rgb-row b { width: 32px; text-align: right; font-weight: 500; font-variant-numeric: tabular-nums; }
+    .swatch { display: inline-block; width: 28px; height: 28px; border-radius: 4px; border: 1px solid var(--border-color); }
+    #recognition { font-size: 14px; }
+    .ok { color: #1a8f4a; }
+    .warn { color: #9a6200; }
+    .xy { color: var(--color-primary); font-variant-numeric: tabular-nums; font-size: 13px; }
+    ul { list-style: none; margin: 0; padding: 0; }
+    li { padding: 8px 0; border-top: 1px solid var(--border-color); font-size: 13px; line-height: 1.45; }
+    .empty { color: var(--text-muted); font-size: 12px; padding-top: 4px; }
     .error {
       display: none;
-      margin-top: 10px;
+      margin-top: 8px;
       padding: 8px 10px;
-      border-radius: 8px;
-      background: #fff1f2;
-      color: #9f1239;
-      font-size: 13px;
+      border-radius: 4px;
+      background: rgba(231, 76, 60, 0.08);
+      color: var(--color-danger);
+      font-size: 12px;
     }
-    ul { list-style: none; margin: 0; padding: 0; }
-    li {
-      padding: 8px 0;
-      border-top: 1px solid var(--line);
-      font-size: 14px;
-      line-height: 1.45;
-    }
-    .xy { color: var(--accent); font-variant-numeric: tabular-nums; }
-    .ok { color: var(--ok); }
-    .warn { color: var(--warn); }
-    .empty { color: var(--muted); padding-top: 8px; font-size: 13px; }
-    .colors { display: flex; flex-wrap: wrap; gap: 8px; }
-    .colors button {
-      border: 1px solid var(--line);
-      background: #fff;
-      color: var(--text);
-      border-radius: 999px;
-      padding: 6px 12px;
-      cursor: pointer;
-      font: inherit;
-    }
-    .colors button.active {
-      background: var(--accent);
-      border-color: var(--accent);
-      color: #fff;
-    }
+    #parameters label { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: 0; padding: 6px 0; font-size: 13px; }
+    details summary { cursor: pointer; font-size: 14px; color: var(--text-secondary); }
     @media (max-width: 860px) {
-      main { grid-template-columns: 1fr; }
+      html, body { overflow: auto; height: auto; }
+      .workspace { height: auto; grid-template-columns: 1fr; }
+      .stage { height: 62vh; }
     }
   </style>
 </head>
 <body>
-  <header>
-    <div>
-      <h1>物料顶面识别</h1>
-      <p>画面中心为 (0, 0)，x 向右为正，y 向下为正。默认只预览。顶面验证通过且连续稳定后可发送；失败立即停止新坐标。</p>
+  <header class="header-bar">
+    <div class="brand">
+      <div class="logo" aria-hidden="true">
+        <svg viewBox="0 0 48 48" xmlns="http://www.w3.org/2000/svg">
+          <circle cx="24" cy="24" r="16" fill="none" stroke="currentColor" stroke-width="2.4"/>
+          <circle cx="24" cy="24" r="6" fill="currentColor"/>
+          <path d="M24 4v6M24 38v6M4 24h6M38 24h6" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/>
+        </svg>
+      </div>
+      <div>
+        <h1>视觉定位</h1>
+        <p>物料顶面识别</p>
+      </div>
+    </div>
+    <div class="dashboard">
+      <div class="lights" title="相机 / 发送 / 识别">
+        <span id="lightCamera" class="light"></span>
+        <span id="lightSend" class="light"></span>
+        <span id="lightTrack" class="light"></span>
+      </div>
+      <div class="block">
+        <svg class="block-icon" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M4 7a3 3 0 0 1 3-3h7l2 2h4a3 3 0 0 1 3 3v9a3 3 0 0 1-3 3H7a3 3 0 0 1-3-3V7zm8 11a5 5 0 1 0 0-10 5 5 0 0 0 0 10zm0-2.2a2.8 2.8 0 1 1 0-5.6 2.8 2.8 0 0 1 0 5.6z"/></svg>
+        <div class="block-info">
+          <span class="block-row" id="linkHost">相机 —</span>
+          <span class="block-row sub" id="linkState">等待画面</span>
+        </div>
+      </div>
+      <div class="block">
+        <div class="block-info">
+          <span class="block-row" id="headerBitrate">0 KiB/s</span>
+          <span class="block-row sub" id="headerRecog">识别 0 FPS</span>
+        </div>
+      </div>
     </div>
   </header>
-  <main>
-    <section class="stage">
-      <div class="colors" style="margin-bottom:10px">
-        <label>视图 <select id="viewMode"><option value="raw">原始画面</option><option value="mask">颜色分割</option><option value="edges">顶面边缘</option><option value="result" selected>识别结果</option></select></label>
+  <div class="workspace">
+    <section class="widget">
+      <div class="titlebar">
+        <span>图像</span>
         <a href="/capture.zip" download="vision-capture.zip">保存原图与诊断包</a>
       </div>
-      <p>物料外轮廓：本色 · 物料中心：紫十字 · 顶面：黄椭圆/十字 · 实际发送：白圈 SEND</p>
-      <img id="view" alt="物料顶面识别" src="/stream.mjpg">
-    </section>
-    <aside class="panel">
-      <div class="meta" id="meta">等待画面…</div>
-      <h2>识别颜色</h2>
-      <div class="colors" id="colors">
-        <button type="button" data-color="">全部</button>
-        <button type="button" data-color="red">红</button>
-        <button type="button" data-color="yellow">黄</button>
-        <button type="button" data-color="blue">蓝</button>
-        <button type="button" data-color="green">绿</button>
+      <div class="stage">
+        <div class="switch">
+          <select id="viewMode" aria-label="视图">
+            <option value="raw">原始画面</option>
+            <option value="mask">黑白画面</option>
+            <option value="edges">顶面边缘</option>
+            <option value="result" selected>识别结果</option>
+          </select>
+        </div>
+        <div class="det">
+          <table>
+            <thead>
+              <tr>
+                <th>ID</th><th>颜色</th><th>X</th><th>Y</th><th>R</th>
+                <th>状态<span class="fps" id="detFps">[0fps]</span></th>
+              </tr>
+            </thead>
+            <tbody id="detBody">
+              <tr><td class="empty-cell" colspan="6">未检测到目标</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="viewport">
+          <img id="view" alt="物料相机原画" src="/stream.mjpg">
+          <canvas id="overlay"></canvas>
+        </div>
+        <div id="meta" class="badge" title="码率 / 分辨率 / 传输帧率 / 丢帧 / 识别帧率">
+          <span id="badgeRate">0.0M</span><span class="sep"></span>
+          <span id="badgeSize">—</span><span class="sep"></span>
+          <span id="badgeFps">0fps</span><span class="sep"></span>
+          <span id="badgeDrop">0</span><span class="sep"></span>
+          <span id="badgeRec">0fps</span>
+        </div>
       </div>
-      <h2>学习物料</h2>
-      <div class="meta" id="learn">先点选红、黄、蓝或绿，再在画面上点一下该物料。学到的颜色会立刻用于识别，并写入配置。</div>
-      <div class="error" id="error"></div>
-      <h2>识别状态</h2><div id="recognition" role="status">未发现物料</div>
-      <h2>发送目标</h2>
-      <label><input type="checkbox" id="sendEnabled">允许发送已验证顶面坐标</label>
-      <p>更换颜色、学习或修改参数会自动关闭发送。</p>
-      <div class="meta" id="target">未选择颜色，不发送</div>
-      <h2>圆环圆心</h2>
-      <ul id="rings"></ul>
-      <h2>物料与顶面中心</h2>
-      <ul id="objects"></ul>
-      <details><summary>高级识别参数</summary><div id="parameters"></div>
-        <button id="applySettings">应用（仅预览）</button>
-        <button id="saveSettings">保存配置</button>
-        <button id="resetSettings">恢复识别默认值</button>
-        <p>恢复默认不修改已学习的 HSV、ROI 与相机配置；点击保存才写入文件。</p>
-      </details><div id="settingsMessage" role="status"></div>
+    </section>
+    <aside class="side">
+      <section class="card">
+        <h2>识别颜色</h2>
+        <div class="colors" id="colors">
+          <button type="button" data-color="">全部</button>
+          <button type="button" data-color="red">红</button>
+          <button type="button" data-color="yellow">黄</button>
+          <button type="button" data-color="blue">蓝</button>
+          <button type="button" data-color="green">绿</button>
+        </div>
+      </section>
+      <section class="card">
+        <h2>RGB 调色</h2>
+        <canvas id="rgbMap" class="rgb-map" width="240" height="120"></canvas>
+        <label class="rgb-row"><span>R</span><input id="rgbR" type="range" min="0" max="255" value="220"><b id="rgbRValue">220</b></label>
+        <label class="rgb-row"><span>G</span><input id="rgbG" type="range" min="0" max="255" value="40"><b id="rgbGValue">40</b></label>
+        <label class="rgb-row"><span>B</span><input id="rgbB" type="range" min="0" max="255" value="40"><b id="rgbBValue">40</b></label>
+        <label class="rgb-row"><span>容差</span><input id="rgbTol" type="range" min="8" max="120" value="48"><b id="rgbTolValue">48</b></label>
+        <div class="rgb-row"><span>当前</span><i id="rgbSwatch" class="swatch"></i></div>
+        <div class="actions">
+          <button id="saveRgb" class="btn primary" type="button">保存颜色</button>
+        </div>
+        <p id="rgbMessage">先点选红、黄、蓝或绿，再在图上拖颜色。反映用黑白画面显示，白色是当前颜色。</p>
+      </section>
+      <section class="card">
+        <h2>学习物料</h2>
+        <div class="hint" id="learn">先点选红、黄、蓝或绿，再在画面上点一下该物料。学到的颜色会立刻用于识别，并写入配置。</div>
+        <div class="error" id="error"></div>
+      </section>
+      <section class="card">
+        <h2>视频设置</h2>
+        <label class="item"><span>帧率</span><input id="streamFps" type="number" min="1" max="30" step="1"></label>
+        <label class="item"><span>峰值传输</span><input id="streamPeak" type="number" min="32" max="8192" step="1"></label>
+        <div class="actions">
+          <button id="applyStream" class="btn" type="button">应用</button>
+          <button id="saveStream" class="btn primary" type="button">保存视频配置</button>
+        </div>
+        <p id="streamMessage">帧率和峰值传输只限制预览码流。识别仍读原画，页面没人看时不编码。</p>
+      </section>
+      <section class="card">
+        <h2>识别状态</h2>
+        <div id="recognition" role="status">未发现物料</div>
+        <h2 style="margin-top:14px">发送目标</h2>
+        <label class="item"><input type="checkbox" id="sendEnabled"><span style="width:auto">允许发送已验证顶面坐标</span></label>
+        <p>更换颜色、学习或修改参数会自动关闭发送。</p>
+        <div class="hint" id="target">未选择颜色，不发送</div>
+      </section>
+      <section class="card">
+        <h2>圆环圆心</h2>
+        <ul id="rings"></ul>
+      </section>
+      <section class="card">
+        <h2>物料与顶面中心</h2>
+        <ul id="objects"></ul>
+      </section>
+      <section class="card">
+        <details>
+          <summary>高级识别参数</summary>
+          <div id="parameters"></div>
+          <div class="actions">
+            <button id="applySettings" class="btn" type="button">应用（仅预览）</button>
+            <button id="saveSettings" class="btn primary" type="button">保存配置</button>
+            <button id="resetSettings" class="btn" type="button">恢复识别默认值</button>
+          </div>
+          <p>恢复默认不修改已学习的 HSV、ROI 与相机配置；点击保存才写入文件。</p>
+        </details>
+        <div id="settingsMessage" role="status"></div>
+      </section>
     </aside>
-  </main>
+  </div>
   <script>
-    const meta = document.getElementById("meta");
     const errorBox = document.getElementById("error");
     const rings = document.getElementById("rings");
     const targetBox = document.getElementById("target");
@@ -178,6 +463,29 @@
       selectedColor = color;
     }
 
+    function drawOverlay(status) {
+      const canvas = document.getElementById("overlay");
+      const width = view.clientWidth;
+      const height = view.clientHeight;
+      if (!width || !height || !frameSize.width || !frameSize.height) return;
+      canvas.width = width;
+      canvas.height = height;
+      const ctx = canvas.getContext("2d");
+      ctx.clearRect(0, 0, width, height);
+      const scale = Math.min(width / frameSize.width, height / frameSize.height);
+      const offsetX = (width - frameSize.width * scale) / 2;
+      const offsetY = (height - frameSize.height * scale) / 2;
+      for (const item of status.objects || []) {
+        if (!item.top_valid || !item.top_center) continue;
+        const radius = Number((item.metrics || {}).radius_px || 12);
+        ctx.beginPath();
+        ctx.arc(offsetX + item.top_center[0] * scale, offsetY + item.top_center[1] * scale, Math.max(4, radius * scale), 0, Math.PI * 2);
+        ctx.strokeStyle = item.stable ? "#00e676" : "#f0b856";
+        ctx.lineWidth = 2;
+        ctx.stroke();
+      }
+    }
+
     function list(node, items, emptyText, render) {
       node.replaceChildren();
       if (!items || items.length === 0) {
@@ -204,19 +512,73 @@
       return li;
     }
 
+    function cell(text) {
+      const td = document.createElement("td");
+      td.textContent = text;
+      return td;
+    }
+
+    function fillDetections(status, recognitionFps) {
+      const body = document.getElementById("detBody");
+      document.getElementById("detFps").textContent = `[${Number(recognitionFps).toFixed(0)}fps]`;
+      body.replaceChildren();
+      const items = status.objects || [];
+      if (!items.length) {
+        const tr = document.createElement("tr");
+        const td = document.createElement("td");
+        td.colSpan = 6;
+        td.className = "empty-cell";
+        td.textContent = "未检测到目标";
+        tr.appendChild(td);
+        body.appendChild(tr);
+        return;
+      }
+      for (const item of items) {
+        const center = item.top_valid && item.top_center ? item.top_center : (item.material_center || [0, 0]);
+        const tr = document.createElement("tr");
+        tr.append(
+          cell(String(item.track_id ?? "?")),
+          cell(item.color || ""),
+          cell(Number(center[0]).toFixed(0)),
+          cell(Number(center[1]).toFixed(0)),
+          cell(Number((item.metrics || {}).radius_px || 0).toFixed(0)),
+          cell(item.stable && item.top_valid ? "稳定" : "确认中"),
+        );
+        body.appendChild(tr);
+      }
+    }
+
     async function refresh() {
       try {
         const response = await fetch("/status.json", { cache: "no-store" });
         const status = await response.json();
         const tune = status.tune || {};
-        const auto = tune.detect_width
-          ? ` · 自动 检测${tune.detect_width} 预览${tune.preview_width} JPEG ${tune.jpeg_quality}`
-          : "";
-        const motionText = status.motion === "hold" ? " · 静止少算" : "";
-        meta.textContent = `相机 ${status.camera_index} · ${status.width}×${status.height} · ${Number(status.fps).toFixed(1)} FPS · ${status.mode}${auto}${motionText}`;
+        const kib = Number(tune.bitrate_kib_s || 0);
+        const recognitionFps = Number(tune.recognition_fps || 0);
+        const dropped = Number(tune.dropped || 0);
+        document.getElementById("badgeRate").textContent = (kib * 8 / 1024).toFixed(1) + "M";
+        document.getElementById("badgeSize").textContent = status.width && status.height ? `${status.width}×${status.height}` : "—";
+        document.getElementById("badgeFps").textContent = Number(status.fps || 0).toFixed(0) + "fps";
+        const drop = document.getElementById("badgeDrop");
+        drop.textContent = String(dropped);
+        drop.classList.toggle("bad", dropped > 0);
+        document.getElementById("badgeRec").textContent = recognitionFps.toFixed(0) + "fps";
+        document.getElementById("linkHost").textContent = `相机 ${status.camera_index ?? "—"}`;
+        document.getElementById("linkState").textContent = status.error ? "离线" : "在线";
+        document.getElementById("headerBitrate").textContent = `${kib.toFixed(0)} KiB/s`;
+        document.getElementById("headerRecog").textContent = `识别 ${recognitionFps.toFixed(1)} FPS`;
+        document.getElementById("lightCamera").className = status.error ? "light alarm" : (status.width ? "light ok" : "light");
+        document.getElementById("lightSend").className = status.send_enabled ? "light ok" : "light";
+        document.getElementById("lightTrack").className = (status.objects || []).some((item) => item.stable && item.top_valid) ? "light ok" : "light";
         frameSize = { width: Number(status.width) || 0, height: Number(status.height) || 0 };
+        drawOverlay(status);
+        fillDetections(status, recognitionFps);
         selectedColor = status.locate_color || "";
         markColor(selectedColor);
+        if (selectedColor !== rgbShown && !rgbHold) {
+          rgbShown = selectedColor;
+          fillRgb(selectedColor).catch(() => {});
+        }
         document.getElementById("recognition").textContent = status.recognition_state || "未发现物料";
         document.getElementById("sendEnabled").checked = !!status.send_enabled;
         const target = status.actual_send_target;
@@ -266,8 +628,12 @@
         return;
       }
       const rect = view.getBoundingClientRect();
-      const x = Math.round((event.clientX - rect.left) / rect.width * frameSize.width);
-      const y = Math.round((event.clientY - rect.top) / rect.height * frameSize.height);
+      const displayedWidth = frameSize.width * Math.min(rect.width / frameSize.width, rect.height / frameSize.height);
+      const displayedHeight = frameSize.height * Math.min(rect.width / frameSize.width, rect.height / frameSize.height);
+      const offsetX = rect.left + (rect.width - displayedWidth) / 2;
+      const offsetY = rect.top + (rect.height - displayedHeight) / 2;
+      const x = Math.round((event.clientX - offsetX) / displayedWidth * frameSize.width);
+      const y = Math.round((event.clientY - offsetY) / displayedHeight * frameSize.height);
       fetch("/learn", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -304,10 +670,10 @@
       const values = await response.json();
       const node = document.getElementById("parameters"); node.replaceChildren();
       for (const [key, value] of Object.entries(values)) {
-        const label = document.createElement("label"); label.style.display = "block"; label.style.margin = "8px 0";
+        const label = document.createElement("label");
         label.textContent = labels[key] || key;
         const input = document.createElement("input"); input.type="number"; input.step="any";
-        input.value=value; input.dataset.key=key; input.style.width="85px";
+        input.value=value; input.dataset.key=key;
         label.appendChild(input); node.appendChild(label);
       }
     }
@@ -322,9 +688,150 @@
     document.getElementById("applySettings").onclick = ()=>updateSettings(false,false).catch(showError);
     document.getElementById("saveSettings").onclick = ()=>updateSettings(true,false).catch(showError);
     document.getElementById("resetSettings").onclick = ()=>updateSettings(false,true).catch(showError);
+    async function loadStream() {
+      const response = await fetch("/stream-settings");
+      if (!response.ok) throw new Error("读取传输设置失败");
+      const values = await response.json();
+      document.getElementById("streamFps").value = values.fps;
+      document.getElementById("streamPeak").value = values.peak_kib_per_sec;
+    }
+    async function updateStream(save) {
+      await post("/stream", {
+        fps: Number(document.getElementById("streamFps").value),
+        peak_kib_per_sec: Number(document.getElementById("streamPeak").value),
+        save,
+      });
+      document.getElementById("streamMessage").textContent = save ? "传输设置已保存" : "传输设置已应用";
+    }
+    document.getElementById("applyStream").onclick = () => updateStream(false).catch(showError);
+    document.getElementById("saveStream").onclick = () => updateStream(true).catch(showError);
+
+    const rgbMap = document.getElementById("rgbMap");
+    const rgbCtx = rgbMap.getContext("2d");
+    const rgbR = document.getElementById("rgbR");
+    const rgbG = document.getElementById("rgbG");
+    const rgbB = document.getElementById("rgbB");
+    const rgbTol = document.getElementById("rgbTol");
+    let rgbHold = false;
+    let rgbShown = null;
+    let rgbTimer = 0;
+
+    function paintRgbMap() {
+      const blue = Number(rgbB.value);
+      const red = Number(rgbR.value);
+      const green = Number(rgbG.value);
+      document.getElementById("rgbRValue").textContent = String(red);
+      document.getElementById("rgbGValue").textContent = String(green);
+      document.getElementById("rgbBValue").textContent = String(blue);
+      document.getElementById("rgbTolValue").textContent = rgbTol.value;
+      document.getElementById("rgbSwatch").style.background = `rgb(${red}, ${green}, ${blue})`;
+      const image = rgbCtx.createImageData(rgbMap.width, rgbMap.height);
+      for (let y = 0; y < rgbMap.height; y += 1) {
+        const g = Math.round((1 - y / (rgbMap.height - 1)) * 255);
+        for (let x = 0; x < rgbMap.width; x += 1) {
+          const r = Math.round(x / (rgbMap.width - 1) * 255);
+          const index = (y * rgbMap.width + x) * 4;
+          image.data[index] = r;
+          image.data[index + 1] = g;
+          image.data[index + 2] = blue;
+          image.data[index + 3] = 255;
+        }
+      }
+      rgbCtx.putImageData(image, 0, 0);
+      const mx = red / 255 * (rgbMap.width - 1);
+      const my = (1 - green / 255) * (rgbMap.height - 1);
+      rgbCtx.strokeStyle = "#ffffff";
+      rgbCtx.lineWidth = 1;
+      rgbCtx.strokeRect(mx - 4, my - 4, 8, 8);
+    }
+
+    function pickRgb(event) {
+      const rect = rgbMap.getBoundingClientRect();
+      const x = Math.min(rgbMap.width - 1, Math.max(0, (event.clientX - rect.left) / rect.width * rgbMap.width));
+      const y = Math.min(rgbMap.height - 1, Math.max(0, (event.clientY - rect.top) / rect.height * rgbMap.height));
+      rgbR.value = String(Math.round(x / (rgbMap.width - 1) * 255));
+      rgbG.value = String(Math.round((1 - y / (rgbMap.height - 1)) * 255));
+      paintRgbMap();
+      scheduleRgb(false);
+    }
+
+    function scheduleRgb(save) {
+      window.clearTimeout(rgbTimer);
+      rgbTimer = window.setTimeout(() => applyRgb(save).catch(showRgbError), save ? 0 : 80);
+    }
+
+    function showRgbError(error) {
+      const box = document.getElementById("rgbMessage");
+      box.textContent = error.message || "调色失败";
+    }
+
+    async function applyRgb(save) {
+      if (!selectedColor) {
+        throw new Error("请先选择红、黄、蓝或绿");
+      }
+      const result = await post("/rgb", {
+        color: selectedColor,
+        r: Number(rgbR.value),
+        g: Number(rgbG.value),
+        b: Number(rgbB.value),
+        tolerance: Number(rgbTol.value),
+        save: !!save,
+      });
+      document.getElementById("viewMode").value = "mask";
+      document.getElementById("rgbMessage").textContent = save
+        ? "颜色已保存。黑白画面里白色是当前颜色。"
+        : "黑白画面里白色是当前颜色。";
+      return result;
+    }
+
+    async function fillRgb(color) {
+      if (!color) return;
+      const response = await fetch("/rgb", { cache: "no-store" });
+      if (!response.ok) return;
+      const payload = await response.json();
+      const item = (payload.colors || {})[color];
+      if (!item || rgbHold) return;
+      rgbR.value = String(item.r);
+      rgbG.value = String(item.g);
+      rgbB.value = String(item.b);
+      rgbTol.value = String(item.tolerance || 48);
+      paintRgbMap();
+    }
+
+    rgbMap.addEventListener("pointerdown", (event) => {
+      rgbHold = true;
+      rgbMap.setPointerCapture(event.pointerId);
+      pickRgb(event);
+    });
+    rgbMap.addEventListener("pointermove", (event) => {
+      if (rgbHold) pickRgb(event);
+    });
+    rgbMap.addEventListener("pointerup", () => { rgbHold = false; });
+    rgbMap.addEventListener("pointercancel", () => { rgbHold = false; });
+    for (const input of [rgbR, rgbG, rgbB, rgbTol]) {
+      input.addEventListener("pointerdown", () => { rgbHold = true; });
+      input.addEventListener("pointerup", () => { rgbHold = false; });
+      input.addEventListener("input", () => {
+        paintRgbMap();
+        scheduleRgb(false);
+      });
+    }
+    document.getElementById("saveRgb").onclick = () => applyRgb(true).catch(showRgbError);
+    paintRgbMap();
+    loadStream().catch(showError);
     loadSettings().catch(showError);
-    refresh();
-    setInterval(refresh, 300);
+    let watching = false;
+    async function watch() {
+      if (watching) return;
+      watching = true;
+      try {
+        await refresh();
+      } finally {
+        watching = false;
+        requestAnimationFrame(watch);
+      }
+    }
+    watch();
   </script>
 </body>
 </html>

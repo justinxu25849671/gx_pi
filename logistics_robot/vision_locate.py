@@ -6,8 +6,8 @@ import logging
 from typing import Any
 
 from .calibration import FrameRectifier
+from .circle_select import CircleTracker, recognize_frame
 from .model import DetectedObject
-from .motion_gate import MotionGate
 from .ring_detection import RingCandidate
 from .vision import MATERIAL_COLORS, CameraVision, draw_shape_segments, image_origin_px
 
@@ -84,7 +84,10 @@ def run_color_ring_locate(config: dict[str, Any], color: str,
         LOG.error("无法打开物料识别相机：%s", exc)
         return 1
     rectifier = FrameRectifier(config["vision_calibration"].get("camera", {}), vision.cv2)
-    motion_gate = MotionGate()
+    tracker = CircleTracker(
+        stable_frames=int(config["object_camera"]["object_detection"].get("stable_frames", 4)),
+        tolerance_px=float(config["object_camera"]["object_detection"].get("stable_center_tolerance_px", 8)),
+    )
     objects: list[DetectedObject] = []
     started = False
     window = True
@@ -94,8 +97,9 @@ def run_color_ring_locate(config: dict[str, Any], color: str,
         LOG.info("视觉定位已打开，分割并发送最上层的 %s 圆形", color)
         while True:
             frame = rectifier.apply(vision.read())
-            sample = motion_gate.update(frame)
-            objects = vision.detect_objects(frame, (color,))
+            objects = recognize_frame(
+                frame, (color,), config["hsv_colors"],
+                config["object_camera"]["object_detection"], tracker)
             target = select_upper_circle(objects)
             height, width = frame.shape[:2]
             point = upper_circle_coordinate(objects, width, height)

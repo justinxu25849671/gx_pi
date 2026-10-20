@@ -169,6 +169,12 @@
       "placement_layer2": {"calibrated": false, "observation_height_mm": 0, "rotation_deg": 0, "landing_reference_px": [960, 540], "pixel_to_motion_mm": [[0, 0], [0, 0]]}
     }
   },
+  "vision_stream": {
+    "fps": 15,
+    "peak_kib_per_sec": 512,
+    "jpeg_quality": 70,
+    "preview_width": 960
+  },
   "placement_alignment": {
     "lateral_tolerance_mm": 1.0,
     "longitudinal_tolerance_mm": 1.0,

@@ -418,6 +418,7 @@ class CameraVision:
             raise RuntimeError("未安装 OpenCV，请先执行 pip install -r requirements.txt") from exc
         self.cv2 = cv2
         self._capture = cv2.VideoCapture(int(camera_config["index"]), _camera_backend(cv2))
+        self._capture.set(cv2.CAP_PROP_BUFFERSIZE, 1)
         self._capture.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
         self._capture.set(cv2.CAP_PROP_FRAME_WIDTH, int(camera_config["width"]))
         self._capture.set(cv2.CAP_PROP_FRAME_HEIGHT, int(camera_config["height"]))
