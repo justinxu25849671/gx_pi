@@ -1,6 +1,6 @@
 {
   "serial": {
-    "port": "/dev/serial0",
+    "port": "/dev/ttyAMA0",
     "baudrate": 115200,
     "request_timeout_s": 1.0,
     "reconnect_period_s": 1.0
@@ -52,6 +52,7 @@
       "top_min_arc_coverage": 0.75,
       "top_border_margin_px": 3,
       "top_fit_trials": 64,
+      "align_tolerance_px": 40,
       "detect_max_width_px": 640,
       "morphology_kernel_px": 5,
       "selection_reference_px": [960, 540],

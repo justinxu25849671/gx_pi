@@ -23,7 +23,9 @@ from .material_learn import (
 from .model import DetectedObject
 from .ring_detection import RingCandidate, RingDetector, draw_ring_debug
 from .vision import MATERIAL_COLORS, CameraVision, draw_object_debug_frame, draw_shape_segments, image_origin_px
-from .vision_locate import parse_locate_color, select_upper_circle, upper_circle_coordinate
+from .vision_locate import (
+    near_image_origin, parse_locate_color, select_upper_circle, upper_circle_coordinate,
+)
 
 
 LOG = logging.getLogger(__name__)
@@ -252,7 +254,8 @@ class _CircleSender:
         self.error = ""
         self.state = "idle"
 
-    def update(self, color: str, point: tuple[int, int] | None) -> str:
+    def update(self, color: str, point: tuple[int, int] | None,
+               tolerance_px: float = 40) -> str:
         if not color:
             self.stop()
             self.state = "idle"
@@ -260,7 +263,7 @@ class _CircleSender:
         if point is None:
             self.state = "waiting"
             return self.state
-        if point == (0, 0):
+        if near_image_origin(point, tolerance_px):
             self.stop()
             self.state = "aligned"
             return self.state
@@ -417,7 +420,8 @@ def _handler(hub: FrameHub, html: bytes, config: dict[str, Any] | None,
     from .top_face import DEFAULTS
     setting_defaults = {**DEFAULTS, "min_area_px": 900, "max_area_px": 250000,
                         "min_circularity": 0.55, "stable_frames": 4,
-                        "stable_center_tolerance_px": 8, "morphology_kernel_px": 5}
+                        "stable_center_tolerance_px": 8, "morphology_kernel_px": 5,
+                        "align_tolerance_px": 40}
 
     class Handler(BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
@@ -528,7 +532,7 @@ def _handler(hub: FrameHub, html: bytes, config: dict[str, Any] | None,
                         for key in setting_defaults:
                             if current.get(key, setting_defaults[key]) <= 0:
                                 raise ValueError(key + " 必须大于 0")
-                        for key in ("top_canny_low", "top_canny_high", "top_border_margin_px", "top_fit_trials", "stable_frames", "morphology_kernel_px"):
+                        for key in ("top_canny_low", "top_canny_high", "top_border_margin_px", "top_fit_trials", "stable_frames", "morphology_kernel_px", "align_tolerance_px"):
                             if int(current.get(key, setting_defaults[key])) != current.get(key, setting_defaults[key]):
                                 raise ValueError(key + " 必须为整数")
                         if not (current.get("top_canny_low",45) < current.get("top_canny_high",120) <= 255
@@ -536,7 +540,8 @@ def _handler(hub: FrameHub, html: bytes, config: dict[str, Any] | None,
                                 and current.get("top_min_area_ratio",.12) < current.get("top_max_area_ratio",1.15) <= 2
                                 and current.get("top_fit_trials",64) <= 256
                                 and current.get("morphology_kernel_px",5) <= 31
-                                and current.get("top_edge_tolerance_px",2.5) <= 10):
+                                and current.get("top_edge_tolerance_px",2.5) <= 10
+                                and 1 <= current.get("align_tolerance_px", 40) <= 200):
                             raise ValueError("参数范围或上下限无效")
                         updated = copy.deepcopy(config)
                         updated["object_camera"]["object_detection"] = current
@@ -743,7 +748,8 @@ def _recognize_loop(slot: FrameSlot, hub: FrameHub, config: dict[str, Any], mode
             ring_tick += 1
             target = select_upper_circle(objects) if color else None
             point = upper_circle_coordinate(objects, frame.shape[1], frame.shape[0]) if color else None
-            send_state = sender.update(color if enabled else "", point)
+            tolerance = float(detection.get("align_tolerance_px", 40))
+            send_state = sender.update(color if enabled else "", point, tolerance)
             if not enabled:
                 send_state = "preview"
             fps_limit, peak_limit, quality_limit = hub.stream_limits()

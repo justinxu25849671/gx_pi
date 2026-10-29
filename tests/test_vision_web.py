@@ -178,6 +178,16 @@ class VisionWebTests(unittest.TestCase):
         self.assertEqual(sender.update("blue", (0, 0)), "aligned")
         client.stop_visual_positioning.assert_called_once()
 
+    def test_sender_stops_inside_align_radius(self):
+        sender = _CircleSender({})
+        client = Mock()
+        sender._link = Mock(path_client=client)
+        sender._started = True
+        self.assertEqual(sender.update("blue", (41, 0)), "sending")
+        self.assertEqual(sender.update("blue", (24, 32), 40), "aligned")
+        client.send_visual_coordinate.assert_called_once_with(41, 0)
+        client.stop_visual_positioning.assert_called_once()
+
 
 if __name__ == "__main__":
     unittest.main()

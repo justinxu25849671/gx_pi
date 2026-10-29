@@ -12,12 +12,18 @@ except ImportError:
 from logistics_robot.model import DetectedObject
 from logistics_robot.ring_detection import RingCandidate, RingDetector
 from logistics_robot.vision_locate import (
-    locate_coordinate, parse_locate_color, retain_hsv_color,
+    locate_coordinate, near_image_origin, parse_locate_color, retain_hsv_color,
     select_upper_circle, upper_circle_coordinate,
 )
 
 
 class VisionLocateTests(unittest.TestCase):
+    def test_align_radius_accepts_nearby_center(self):
+        self.assertTrue(near_image_origin((0, 0)))
+        self.assertTrue(near_image_origin((24, 32), 40))
+        self.assertFalse(near_image_origin((41, 0), 40))
+        self.assertFalse(near_image_origin((80, -273), 40))
+
     def test_parse_color_names_and_task_digits(self):
         self.assertEqual(parse_locate_color("Red"), "red")
         self.assertEqual(parse_locate_color("2"), "yellow")

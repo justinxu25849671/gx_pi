@@ -62,6 +62,15 @@ def upper_circle_coordinate(objects: list[DetectedObject], width: int,
     return image_origin_px(target.circle_center_px[0], target.circle_center_px[1], width, height)
 
 
+def near_image_origin(point: tuple[int, int], tolerance_px: float = 40) -> bool:
+    """圆心到画面中心的距离不超过容差时视为到位。容差单位是像素。"""
+    limit = float(tolerance_px)
+    if limit < 0 or limit != limit:
+        raise ValueError("到位容差无效")
+    x_px, y_px = int(point[0]), int(point[1])
+    return x_px * x_px + y_px * y_px <= limit * limit
+
+
 def locate_coordinate(rings: list[RingCandidate], width: int,
                       height: int) -> tuple[int, int] | None:
     """唯一稳定圆环才返回画面中心坐标。没有或不止一个时不发。"""
@@ -103,10 +112,12 @@ def run_color_ring_locate(config: dict[str, Any], color: str,
             target = select_upper_circle(objects)
             height, width = frame.shape[:2]
             point = upper_circle_coordinate(objects, width, height)
+            tolerance = float(config["object_camera"]["object_detection"].get("align_tolerance_px", 40))
             if point is None:
                 LOG.info("未锁定稳定的 %s 圆形，暂不发送坐标", color)
-            elif point == (0, 0):
-                LOG.info("%s 圆形圆心已在画面原点，结束视觉定位", color)
+            elif near_image_origin(point, tolerance):
+                LOG.info("%s 圆形圆心已进入画面中心 %.0f 像素内，结束视觉定位",
+                         color, tolerance)
                 client.stop_visual_positioning()
                 started = False
                 return 0
